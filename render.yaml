@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: nfl-draft-pool
+    runtime: docker
+    plan: free
+    envVars:
+      - key: ADMIN_PASSWORD
+        generateValue: true
+      - key: PORT
+        value: "10000"

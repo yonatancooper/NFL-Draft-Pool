@@ -1,0 +1,9 @@
+{
+  "exact": 10,
+  "off_by_1_2": 7,
+  "off_by_3_5": 4,
+  "off_by_6_10": 2,
+  "off_by_11_20": 1,
+  "off_by_21_plus": 0,
+  "player_in_board_bonus": 2
+}
