@@ -389,11 +389,12 @@ def leaderboard(db: Session = Depends(get_db)):
 # ── Serve frontend (production) ──────────────────────────────────────────
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "frontend" / "dist"
-if STATIC_DIR.is_dir():
-    app.mount("/assets", StaticFiles(directory=str(STATIC_DIR / "assets")), name="assets")
 
+if STATIC_DIR.is_dir():
     @app.get("/{full_path:path}")
     def serve_spa(full_path: str):
+        if full_path.startswith("api"):
+            raise HTTPException(404, "Not found")
         file_path = STATIC_DIR / full_path
         if file_path.is_file():
             return FileResponse(str(file_path))
