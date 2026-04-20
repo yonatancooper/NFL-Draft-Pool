@@ -44,9 +44,13 @@ export default function Leaderboard() {
                 <tr key={entry.token} className="hover:bg-gray-750">
                   <td className="px-4 py-3 font-bold text-gray-400">{entry.rank}</td>
                   <td className="px-4 py-3">
-                    <Link to={`/entry/${entry.token}`} className="text-white hover:text-green-400 font-medium">
-                      {entry.first_name} {entry.last_name}
-                    </Link>
+                    {entry.token ? (
+                      <Link to={`/entry/${entry.token}`} className="text-white hover:text-green-400 font-medium">
+                        {entry.first_name} {entry.last_name}
+                      </Link>
+                    ) : (
+                      <span className="text-white font-medium">{entry.first_name} {entry.last_name}</span>
+                    )}
                   </td>
                   {hasResults && (
                     <td className="px-4 py-3 text-right font-bold text-green-400">{entry.total_score}</td>

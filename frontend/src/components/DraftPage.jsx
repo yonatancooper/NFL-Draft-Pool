@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd';
-import { getProspects, getDraftOrder, submitEntry, checkEmail, saveDraft, loadDraft, getEntry, updateEntry } from '../api';
+import { getProspects, getDraftOrder, submitEntry, checkEmail, saveDraft, loadDraft, loadOwnPicks, updateEntry } from '../api';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import PositionBadge, { GradeBadge } from './PositionBadge';
 import HowToPlay from './HowToPlay';
@@ -48,14 +48,17 @@ export default function DraftPage() {
       setProspects(p);
       setDraftOrder(d);
       const editParam = searchParams.get('edit');
-      if (editParam) {
-        getEntry(editParam).then(entry => {
+      const emailParam = searchParams.get('email');
+      const pwParam = searchParams.get('pw');
+      if (editParam && emailParam && pwParam) {
+        loadOwnPicks({ email: emailParam, password: pwParam }).then(data => {
           const newBoard = {};
-          for (const pick of entry.picks) {
-            newBoard[pick.slot_number] = pick.predicted_prospect;
+          for (const pick of data.picks) {
+            const prospect = p.find(pr => pr.id === pick.predicted_prospect.id);
+            if (prospect) newBoard[pick.slot_number] = prospect;
           }
           setBoard(newBoard);
-          setForm(f => ({ ...f, first_name: entry.first_name, last_name: entry.last_name, email: '' }));
+          setForm(f => ({ ...f, first_name: data.first_name, last_name: data.last_name, email: emailParam, password: pwParam }));
           setEditToken(editParam);
         }).catch(() => {});
       }
@@ -198,7 +201,7 @@ export default function DraftPage() {
         prospect_id: prospect.id,
       }));
       if (editToken) {
-        await updateEntry(editToken, { password: form.password, picks });
+        await updateEntry(editToken, { email: form.email, password: form.password, picks });
         navigate(`/entry/${editToken}`);
       } else {
         if (!form.first_name.trim() || !form.last_name.trim() || !form.email.trim()) { setError('All fields are required.'); setSubmitting(false); return; }
@@ -541,15 +544,17 @@ export default function DraftPage() {
                   </>
                 )}
                 {editToken && (
-                  <p className="text-sm text-gray-300">Editing picks for {form.first_name} {form.last_name}</p>
+                  <p className="text-sm text-gray-300">Updating picks for {form.first_name} {form.last_name}</p>
                 )}
-                <input
-                  type="password"
-                  placeholder={editToken ? 'Enter your password' : 'Password (same as your saved draft)'}
-                  value={form.password}
-                  onChange={e => setForm({ ...form, password: e.target.value })}
-                  className="w-full bg-gray-700 rounded px-3 py-2 text-white placeholder-gray-400 outline-none focus:ring-1 focus:ring-green-500"
-                />
+                {!editToken && (
+                  <input
+                    type="password"
+                    placeholder="Password (same as your saved draft)"
+                    value={form.password}
+                    onChange={e => setForm({ ...form, password: e.target.value })}
+                    className="w-full bg-gray-700 rounded px-3 py-2 text-white placeholder-gray-400 outline-none focus:ring-1 focus:ring-green-500"
+                  />
+                )}
                 <div className="flex gap-3 pt-2">
                   <button type="button" onClick={() => setShowSubmit(false)} className="flex-1 bg-gray-700 hover:bg-gray-600 rounded py-2 text-sm">
                     Cancel

@@ -88,6 +88,7 @@ class EntryDetailOut(BaseModel):
 
 
 class EditEntryIn(BaseModel):
+    email: str
     password: str
     picks: list[PickIn]
 

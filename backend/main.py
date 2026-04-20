@@ -63,6 +63,7 @@ app.add_middleware(
 )
 
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "draftadmin2026")
+DRAFT_LOCK = datetime.datetime(2026, 4, 23, 20, 0, 0)
 
 # ── Draft order (2026 NFL Draft) ──────────────────────────────────────────
 DRAFT_ORDER = [
@@ -279,10 +280,27 @@ def get_entry(token: str, db: Session = Depends(get_db)):
     if not user:
         raise HTTPException(404, "Entry not found.")
 
-    picks = sorted(user.picks, key=lambda x: x.slot_number)
     results = {r.slot_number: r for r in db.query(Result).all()}
     has_results = len(results) > 0
 
+    now_et = datetime.datetime.utcnow() - datetime.timedelta(hours=4)
+    draft_locked = now_et >= DRAFT_LOCK
+
+    if not draft_locked and not has_results:
+        return {
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "submitted_at": user.submitted_at,
+            "token": user.submission_token,
+            "total_score": None,
+            "exact_picks": None,
+            "has_results": False,
+            "picks_hidden": True,
+            "picks": [],
+            "draft_order": DRAFT_ORDER,
+        }
+
+    picks = sorted(user.picks, key=lambda x: x.slot_number)
     actual_by_prospect = {}
     if has_results:
         actual_by_prospect = {r.prospect_id: r.slot_number for r in results.values()}
@@ -319,6 +337,7 @@ def get_entry(token: str, db: Session = Depends(get_db)):
         "total_score": total if has_results else None,
         "exact_picks": exact if has_results else None,
         "has_results": has_results,
+        "picks_hidden": False,
         "picks": pick_details,
         "draft_order": DRAFT_ORDER,
     }
@@ -326,7 +345,32 @@ def get_entry(token: str, db: Session = Depends(get_db)):
 
 # ── Edit entry ──────────────────────────────────────────────────────────
 
-DRAFT_LOCK = datetime.datetime(2026, 4, 23, 20, 0, 0)
+@app.post("/api/entry/load-picks")
+def load_own_picks(data: LoadDraftIn, db: Session = Depends(get_db)):
+    email = data.email.strip().lower()
+    user = db.query(User).filter(User.email == email).first()
+    if not user:
+        raise HTTPException(404, "No entry found for this email.")
+    if not user.password_hash:
+        raise HTTPException(400, "This entry has no password set. Contact admin.")
+    if not verify_password(data.password, user.password_hash):
+        raise HTTPException(403, "Wrong password.")
+
+    picks = sorted(user.picks, key=lambda x: x.slot_number)
+    pick_details = []
+    for p in picks:
+        pick_details.append({
+            "slot_number": p.slot_number,
+            "predicted_prospect": p.prospect,
+        })
+
+    return {
+        "first_name": user.first_name,
+        "last_name": user.last_name,
+        "token": user.submission_token,
+        "picks": pick_details,
+    }
+
 
 @app.put("/api/entry/{token}/edit")
 def edit_entry(token: str, data: EditEntryIn, db: Session = Depends(get_db)):
@@ -334,10 +378,12 @@ def edit_entry(token: str, data: EditEntryIn, db: Session = Depends(get_db)):
     if now_et >= DRAFT_LOCK:
         raise HTTPException(403, "Edits are locked — the draft has started.")
 
+    email = data.email.strip().lower()
     user = db.query(User).filter(User.submission_token == token).first()
     if not user:
         raise HTTPException(404, "Entry not found.")
-
+    if user.email != email:
+        raise HTTPException(403, "Email does not match this entry.")
     if not user.password_hash:
         raise HTTPException(400, "This entry has no password set. Contact admin.")
     if not verify_password(data.password, user.password_hash):
@@ -438,7 +484,7 @@ def leaderboard(db: Session = Depends(get_db)):
             })
         return {"has_results": True, "entries": entries}
 
-    # Pre-draft: show all entrants without scores
+    # Pre-draft: show all entrants without scores or tokens
     users = db.query(User).order_by(User.submitted_at).all()
     entries = []
     for i, user in enumerate(users, start=1):
@@ -449,7 +495,6 @@ def leaderboard(db: Session = Depends(get_db)):
             "total_score": None,
             "exact_picks": None,
             "submitted_at": user.submitted_at,
-            "token": user.submission_token,
         })
     return {"has_results": False, "entry_count": len(entries), "entries": entries}
 
