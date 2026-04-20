@@ -352,8 +352,9 @@ def load_own_picks(data: LoadDraftIn, db: Session = Depends(get_db)):
     if not user:
         raise HTTPException(404, "No entry found for this email.")
     if not user.password_hash:
-        raise HTTPException(400, "This entry has no password set. Contact admin.")
-    if not verify_password(data.password, user.password_hash):
+        user.password_hash = hash_password(data.password)
+        db.commit()
+    elif not verify_password(data.password, user.password_hash):
         raise HTTPException(403, "Wrong password.")
 
     picks = sorted(user.picks, key=lambda x: x.slot_number)
@@ -385,8 +386,9 @@ def edit_entry(token: str, data: EditEntryIn, db: Session = Depends(get_db)):
     if user.email != email:
         raise HTTPException(403, "Email does not match this entry.")
     if not user.password_hash:
-        raise HTTPException(400, "This entry has no password set. Contact admin.")
-    if not verify_password(data.password, user.password_hash):
+        user.password_hash = hash_password(data.password)
+        db.commit()
+    elif not verify_password(data.password, user.password_hash):
         raise HTTPException(403, "Wrong password.")
 
     if len(data.picks) != 32:
