@@ -361,29 +361,123 @@ def admin_stats(password: str, db: Session = Depends(get_db)):
 @app.get("/api/leaderboard")
 def leaderboard(db: Session = Depends(get_db)):
     has_results = db.query(Result).count() > 0
-    if not has_results:
-        return {"has_results": False, "entries": []}
 
-    scores = (
-        db.query(Score, User)
-        .join(User, Score.user_id == User.id)
-        .order_by(Score.total_score.desc())
-        .all()
-    )
+    if has_results:
+        scores = (
+            db.query(Score, User)
+            .join(User, Score.user_id == User.id)
+            .order_by(Score.total_score.desc())
+            .all()
+        )
+        entries = []
+        for rank, (score, user) in enumerate(scores, start=1):
+            entries.append({
+                "rank": rank,
+                "first_name": user.first_name,
+                "last_name": user.last_name,
+                "total_score": score.total_score,
+                "exact_picks": score.exact_picks,
+                "submitted_at": user.submitted_at,
+                "token": user.submission_token,
+            })
+        return {"has_results": True, "entries": entries}
 
+    # Pre-draft: show all entrants without scores
+    users = db.query(User).order_by(User.submitted_at).all()
     entries = []
-    for rank, (score, user) in enumerate(scores, start=1):
+    for i, user in enumerate(users, start=1):
         entries.append({
-            "rank": rank,
+            "rank": i,
             "first_name": user.first_name,
             "last_name": user.last_name,
-            "total_score": score.total_score,
-            "exact_picks": score.exact_picks,
+            "total_score": None,
+            "exact_picks": None,
             "submitted_at": user.submitted_at,
             "token": user.submission_token,
         })
+    return {"has_results": False, "entry_count": len(entries), "entries": entries}
 
-    return {"has_results": True, "entries": entries}
+
+# ── Admin: list all entries ──────────────────────────────────────────────
+
+@app.get("/api/admin/entries")
+def admin_list_entries(password: str, db: Session = Depends(get_db)):
+    if password != ADMIN_PASSWORD:
+        raise HTTPException(403, "Invalid admin password.")
+    users = db.query(User).order_by(User.submitted_at).all()
+    entries = []
+    for user in users:
+        picks = sorted(user.picks, key=lambda p: p.slot_number)
+        entries.append({
+            "id": user.id,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "email": user.email,
+            "token": user.submission_token,
+            "submitted_at": user.submitted_at,
+            "picks": [{"slot_number": p.slot_number, "prospect_id": p.prospect_id, "prospect_name": p.prospect.name} for p in picks],
+        })
+    return entries
+
+
+# ── Admin: delete entry ──────────────────────────────────────────────────
+
+@app.delete("/api/admin/entries/{user_id}")
+def admin_delete_entry(user_id: int, password: str, db: Session = Depends(get_db)):
+    if password != ADMIN_PASSWORD:
+        raise HTTPException(403, "Invalid admin password.")
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(404, "Entry not found.")
+    db.query(Score).filter(Score.user_id == user_id).delete()
+    db.query(Pick).filter(Pick.user_id == user_id).delete()
+    db.delete(user)
+    db.commit()
+    return {"message": f"Deleted entry for {user.first_name} {user.last_name}."}
+
+
+# ── Admin: edit picks ───────────────────────────────────────────────────
+
+@app.put("/api/admin/entries/{user_id}/picks")
+def admin_edit_picks(user_id: int, data: dict, db: Session = Depends(get_db)):
+    if data.get("password") != ADMIN_PASSWORD:
+        raise HTTPException(403, "Invalid admin password.")
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(404, "Entry not found.")
+
+    picks = data.get("picks", [])
+    if len(picks) != 32:
+        raise HTTPException(400, "Exactly 32 picks required.")
+
+    slots = [p["slot_number"] for p in picks]
+    if sorted(slots) != list(range(1, 33)):
+        raise HTTPException(400, "Must fill slots 1-32 exactly once each.")
+
+    prospect_ids = [p["prospect_id"] for p in picks]
+    if len(set(prospect_ids)) != 32:
+        raise HTTPException(400, "Duplicate prospects are not allowed.")
+
+    count = db.query(Prospect).filter(Prospect.id.in_(prospect_ids)).count()
+    if count != 32:
+        raise HTTPException(400, "One or more prospect IDs are invalid.")
+
+    # Delete old picks and insert new ones
+    db.query(Pick).filter(Pick.user_id == user_id).delete()
+    for p in picks:
+        db.add(Pick(user_id=user_id, slot_number=p["slot_number"], prospect_id=p["prospect_id"]))
+
+    # Re-score if results exist
+    db.query(Score).filter(Score.user_id == user_id).delete()
+    results = {r.slot_number: r.prospect_id for r in db.query(Result).all()}
+    if results:
+        config = load_scoring_config()
+        user_picks = {p["slot_number"]: p["prospect_id"] for p in picks}
+        total, exact = score_submission(user_picks, results, config)
+        db.add(Score(user_id=user_id, total_score=total, exact_picks=exact))
+
+    db.commit()
+    return {"message": f"Updated picks for {user.first_name} {user.last_name}."}
 
 
 # ── Serve frontend (production) ──────────────────────────────────────────
