@@ -32,6 +32,7 @@ export default function DraftPage() {
   const [showSaveLoad, setShowSaveLoad] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [expandedProspect, setExpandedProspect] = useState(null);
+  const [selectedSlot, setSelectedSlot] = useState(null);
   const [form, setForm] = useState({ first_name: '', last_name: '', email: '', password: '' });
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -89,6 +90,24 @@ export default function DraftPage() {
     const newBoard = { ...board };
     delete newBoard[slot];
     setBoard(newBoard);
+  }
+
+  function assignProspectToSlot(prospect) {
+    if (selectedSlot == null) return;
+    const newBoard = { ...board };
+    newBoard[selectedSlot] = prospect;
+    setBoard(newBoard);
+    // Auto-advance to next empty slot
+    const nextEmpty = draftOrder.find(s => s.pick > selectedSlot && !newBoard[s.pick]);
+    setSelectedSlot(nextEmpty ? nextEmpty.pick : null);
+  }
+
+  function handleSlotClick(slotPick) {
+    if (board[slotPick]) {
+      setSelectedSlot(selectedSlot === slotPick ? null : slotPick);
+    } else {
+      setSelectedSlot(selectedSlot === slotPick ? null : slotPick);
+    }
   }
 
   // ── Save / Load draft ──────────────────────────────────────────────────
@@ -199,7 +218,10 @@ export default function DraftPage() {
         `}>
           <div className="p-3 border-b border-gray-700 space-y-2">
             <div className="flex items-center justify-between">
-              <h2 className="font-bold text-green-400">Prospects ({availableProspects.length})</h2>
+              <h2 className="font-bold text-green-400">
+                Prospects ({availableProspects.length})
+                {selectedSlot != null && <span className="text-xs text-yellow-400 ml-2">Pick #{selectedSlot} selected</span>}
+              </h2>
               <button onClick={() => setShowHowTo(true)} className="text-xs text-gray-400 hover:text-white underline">
                 How to Play
               </button>
@@ -251,10 +273,18 @@ export default function DraftPage() {
                         {...provided.draggableProps}
                         {...provided.dragHandleProps}
                         className={`p-2 rounded text-sm cursor-grab ${
-                          snapshot.isDragging ? 'bg-green-900/50 ring-1 ring-green-500' : 'bg-gray-750 hover:bg-gray-700'
+                          snapshot.isDragging ? 'bg-green-900/50 ring-1 ring-green-500'
+                            : selectedSlot != null ? 'bg-gray-750 hover:bg-green-900/30 hover:ring-1 hover:ring-green-500 cursor-pointer'
+                            : 'bg-gray-750 hover:bg-gray-700'
                         }`}
                         style={provided.draggableProps.style}
-                        onClick={() => setExpandedProspect(expandedProspect === p.id ? null : p.id)}
+                        onClick={() => {
+                          if (selectedSlot != null) {
+                            assignProspectToSlot(p);
+                          } else {
+                            setExpandedProspect(expandedProspect === p.id ? null : p.id);
+                          }
+                        }}
                       >
                         <div className="flex items-center gap-2">
                           <span className="text-gray-500 w-6 text-right text-xs">{p.consensus_rank}</span>
@@ -342,15 +372,20 @@ export default function DraftPage() {
                       <div
                         ref={provided.innerRef}
                         {...provided.droppableProps}
-                        className={`flex items-center gap-3 rounded-lg p-3 border transition-colors ${
-                          snapshot.isDraggingOver
+                        onClick={() => handleSlotClick(slot.pick)}
+                        className={`flex items-center gap-3 rounded-lg p-3 border transition-colors cursor-pointer ${
+                          selectedSlot === slot.pick
+                            ? 'border-green-400 bg-green-900/30 ring-1 ring-green-400'
+                            : snapshot.isDraggingOver
                             ? 'border-green-500 bg-green-900/20'
                             : prospect
-                            ? 'border-gray-600 bg-gray-800'
-                            : 'border-dashed border-gray-600 bg-gray-800/50'
+                            ? 'border-gray-600 bg-gray-800 hover:border-gray-500'
+                            : 'border-dashed border-gray-600 bg-gray-800/50 hover:border-gray-500'
                         }`}
                       >
-                        <div className="w-8 h-8 rounded-full bg-gray-700 flex items-center justify-center text-sm font-bold text-gray-300 shrink-0">
+                        <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold shrink-0 ${
+                          selectedSlot === slot.pick ? 'bg-green-600 text-white' : 'bg-gray-700 text-gray-300'
+                        }`}>
                           {slot.pick}
                         </div>
                         <div className="w-14 text-center shrink-0">
@@ -374,7 +409,9 @@ export default function DraftPage() {
                             )}
                           </Draggable>
                         ) : (
-                          <div className="flex-1 text-gray-500 text-sm italic">Drag a prospect here</div>
+                          <div className={`flex-1 text-sm italic ${selectedSlot === slot.pick ? 'text-green-400' : 'text-gray-500'}`}>
+                            {selectedSlot === slot.pick ? 'Click a prospect to assign here' : 'Click to select, or drag a prospect here'}
+                          </div>
                         )}
 
                         {prospect && (
