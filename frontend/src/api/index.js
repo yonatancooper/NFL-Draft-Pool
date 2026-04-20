@@ -24,5 +24,6 @@ export const getAdminStats = (password) => request(`/admin/stats?password=${enco
 export const getAdminEntries = (password) => request(`/admin/entries?password=${encodeURIComponent(password)}`);
 export const deleteAdminEntry = (userId, password) => request(`/admin/entries/${userId}?password=${encodeURIComponent(password)}`, { method: 'DELETE' });
 export const editAdminPicks = (userId, data) => request(`/admin/entries/${userId}/picks`, { method: 'PUT', body: JSON.stringify(data) });
+export const updateEntry = (token, data) => request(`/entry/${token}/edit`, { method: 'PUT', body: JSON.stringify(data) });
 export const saveDraft = (data) => request('/drafts/save', { method: 'POST', body: JSON.stringify(data) });
 export const loadDraft = (data) => request('/drafts/load', { method: 'POST', body: JSON.stringify(data) });

@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useNavigate } from 'react-router-dom';
 import { getEntry } from '../api';
 import PositionBadge from './PositionBadge';
+import { isDraftLocked } from './Countdown';
 
 function distanceColor(distance) {
   if (distance === null || distance === undefined) return '';
@@ -13,6 +14,7 @@ function distanceColor(distance) {
 
 export default function EntryView() {
   const { token } = useParams();
+  const navigate = useNavigate();
   const [entry, setEntry] = useState(null);
   const [error, setError] = useState('');
 
@@ -55,6 +57,14 @@ export default function EntryView() {
           />
           <p className="text-[10px] text-gray-500 mt-1">Click to copy shareable link</p>
         </div>
+        {!isDraftLocked() && !entry.has_results && (
+          <button
+            onClick={() => navigate(`/?edit=${token}`)}
+            className="mt-3 w-full bg-blue-600 hover:bg-blue-500 rounded px-4 py-2 text-sm font-semibold"
+          >
+            Edit My Picks
+          </button>
+        )}
       </div>
 
       <div className="space-y-2">

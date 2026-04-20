@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd';
-import { getProspects, getDraftOrder, submitEntry, checkEmail, saveDraft, loadDraft } from '../api';
-import { useNavigate } from 'react-router-dom';
+import { getProspects, getDraftOrder, submitEntry, checkEmail, saveDraft, loadDraft, getEntry, updateEntry } from '../api';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import PositionBadge, { GradeBadge } from './PositionBadge';
 import HowToPlay from './HowToPlay';
 import { isDraftLocked } from './Countdown';
@@ -21,6 +21,7 @@ function matchesGradeFilter(grade, filter) {
 
 export default function DraftPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [prospects, setProspects] = useState([]);
   const [draftOrder, setDraftOrder] = useState([]);
   const [board, setBoard] = useState({}); // { slotNumber: prospect }
@@ -40,11 +41,24 @@ export default function DraftPage() {
   const [saveError, setSaveError] = useState('');
   const [saving, setSaving] = useState(false);
   const [lastSaved, setLastSaved] = useState(null);
+  const [editToken, setEditToken] = useState(null);
 
   useEffect(() => {
     Promise.all([getProspects(), getDraftOrder()]).then(([p, d]) => {
       setProspects(p);
       setDraftOrder(d);
+      const editParam = searchParams.get('edit');
+      if (editParam) {
+        getEntry(editParam).then(entry => {
+          const newBoard = {};
+          for (const pick of entry.picks) {
+            newBoard[pick.slot_number] = pick.predicted_prospect;
+          }
+          setBoard(newBoard);
+          setForm(f => ({ ...f, first_name: entry.first_name, last_name: entry.last_name, email: '' }));
+          setEditToken(editParam);
+        }).catch(() => {});
+      }
     });
   }, []);
 
@@ -174,20 +188,25 @@ export default function DraftPage() {
     e.preventDefault();
     setError('');
     if (Object.keys(board).length !== 32) { setError('Fill all 32 slots before submitting.'); return; }
-    if (!form.first_name.trim() || !form.last_name.trim() || !form.email.trim()) { setError('All fields are required.'); return; }
     if (!form.password || form.password.length < 4) { setError('Password must be at least 4 characters.'); return; }
-    if (isDraftLocked()) { setError('Submissions are locked \u2014 the draft has started.'); return; }
+    if (isDraftLocked()) { setError('Submissions are locked — the draft has started.'); return; }
 
     setSubmitting(true);
     try {
-      const emailCheck = await checkEmail(form.email);
-      if (emailCheck.submitted) { navigate(`/entry/${emailCheck.token}`); return; }
       const picks = Object.entries(board).map(([slot, prospect]) => ({
         slot_number: parseInt(slot),
         prospect_id: prospect.id,
       }));
-      const result = await submitEntry({ first_name: form.first_name, last_name: form.last_name, email: form.email, password: form.password, picks });
-      navigate(`/entry/${result.token}`);
+      if (editToken) {
+        await updateEntry(editToken, { password: form.password, picks });
+        navigate(`/entry/${editToken}`);
+      } else {
+        if (!form.first_name.trim() || !form.last_name.trim() || !form.email.trim()) { setError('All fields are required.'); setSubmitting(false); return; }
+        const emailCheck = await checkEmail(form.email);
+        if (emailCheck.submitted) { navigate(`/entry/${emailCheck.token}`); return; }
+        const result = await submitEntry({ first_name: form.first_name, last_name: form.last_name, email: form.email, password: form.password, picks });
+        navigate(`/entry/${result.token}`);
+      }
     } catch (err) {
       setError(err.message);
     } finally {
@@ -354,7 +373,7 @@ export default function DraftPage() {
                     onClick={() => setShowSubmit(true)}
                     className="bg-green-600 hover:bg-green-500 text-white px-4 py-1.5 rounded text-sm font-semibold"
                   >
-                    Submit Entry
+                    {editToken ? 'Update Picks' : 'Submit Entry'}
                   </button>
                 )}
               </div>
@@ -488,32 +507,45 @@ export default function DraftPage() {
         {showSubmit && (
           <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={() => setShowSubmit(false)}>
             <div className="bg-gray-800 rounded-xl max-w-md w-full p-6" onClick={e => e.stopPropagation()}>
-              <h2 className="text-xl font-bold text-green-400 mb-2">Submit Your Entry</h2>
-              <p className="text-xs text-gray-400 mb-4">Once submitted, your board is locked and cannot be changed.</p>
+              <h2 className="text-xl font-bold text-green-400 mb-2">
+                {editToken ? 'Update Your Picks' : 'Submit Your Entry'}
+              </h2>
+              <p className="text-xs text-gray-400 mb-4">
+                {editToken
+                  ? 'Enter your password to save your updated picks.'
+                  : 'You can edit your picks anytime before the draft starts.'}
+              </p>
               {error && <div className="bg-red-900/50 text-red-300 rounded p-2 mb-3 text-sm">{error}</div>}
               <form onSubmit={handleSubmit} className="space-y-3">
-                <input
-                  placeholder="First name"
-                  value={form.first_name}
-                  onChange={e => setForm({ ...form, first_name: e.target.value })}
-                  className="w-full bg-gray-700 rounded px-3 py-2 text-white placeholder-gray-400 outline-none focus:ring-1 focus:ring-green-500"
-                />
-                <input
-                  placeholder="Last name"
-                  value={form.last_name}
-                  onChange={e => setForm({ ...form, last_name: e.target.value })}
-                  className="w-full bg-gray-700 rounded px-3 py-2 text-white placeholder-gray-400 outline-none focus:ring-1 focus:ring-green-500"
-                />
-                <input
-                  type="email"
-                  placeholder="Email"
-                  value={form.email}
-                  onChange={e => setForm({ ...form, email: e.target.value })}
-                  className="w-full bg-gray-700 rounded px-3 py-2 text-white placeholder-gray-400 outline-none focus:ring-1 focus:ring-green-500"
-                />
+                {!editToken && (
+                  <>
+                    <input
+                      placeholder="First name"
+                      value={form.first_name}
+                      onChange={e => setForm({ ...form, first_name: e.target.value })}
+                      className="w-full bg-gray-700 rounded px-3 py-2 text-white placeholder-gray-400 outline-none focus:ring-1 focus:ring-green-500"
+                    />
+                    <input
+                      placeholder="Last name"
+                      value={form.last_name}
+                      onChange={e => setForm({ ...form, last_name: e.target.value })}
+                      className="w-full bg-gray-700 rounded px-3 py-2 text-white placeholder-gray-400 outline-none focus:ring-1 focus:ring-green-500"
+                    />
+                    <input
+                      type="email"
+                      placeholder="Email"
+                      value={form.email}
+                      onChange={e => setForm({ ...form, email: e.target.value })}
+                      className="w-full bg-gray-700 rounded px-3 py-2 text-white placeholder-gray-400 outline-none focus:ring-1 focus:ring-green-500"
+                    />
+                  </>
+                )}
+                {editToken && (
+                  <p className="text-sm text-gray-300">Editing picks for {form.first_name} {form.last_name}</p>
+                )}
                 <input
                   type="password"
-                  placeholder="Password (same as your saved draft)"
+                  placeholder={editToken ? 'Enter your password' : 'Password (same as your saved draft)'}
                   value={form.password}
                   onChange={e => setForm({ ...form, password: e.target.value })}
                   className="w-full bg-gray-700 rounded px-3 py-2 text-white placeholder-gray-400 outline-none focus:ring-1 focus:ring-green-500"
@@ -527,7 +559,7 @@ export default function DraftPage() {
                     disabled={submitting}
                     className="flex-1 bg-green-600 hover:bg-green-500 rounded py-2 text-sm font-semibold disabled:opacity-50"
                   >
-                    {submitting ? 'Submitting...' : 'Submit (Final)'}
+                    {submitting ? (editToken ? 'Updating...' : 'Submitting...') : (editToken ? 'Update Picks' : 'Submit Entry')}
                   </button>
                 </div>
               </form>

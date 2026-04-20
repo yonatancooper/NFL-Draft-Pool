@@ -87,6 +87,11 @@ class EntryDetailOut(BaseModel):
     picks: list[EntryDetailPick]
 
 
+class EditEntryIn(BaseModel):
+    password: str
+    picks: list[PickIn]
+
+
 class SaveDraftIn(BaseModel):
     email: str
     password: str

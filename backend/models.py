@@ -30,6 +30,7 @@ class User(Base):
     first_name = Column(String, nullable=False)
     last_name = Column(String, nullable=False)
     email = Column(String, unique=True, nullable=False, index=True)
+    password_hash = Column(String, nullable=True)
     submission_token = Column(String, unique=True, nullable=False, index=True)
     submitted_at = Column(DateTime, default=datetime.datetime.utcnow)
     picks = relationship("Pick", back_populates="user")

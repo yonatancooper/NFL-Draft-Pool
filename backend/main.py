@@ -20,7 +20,7 @@ from models import Prospect, User, Pick, Result, Score, SavedDraft
 from schemas import (
     ProspectOut, SubmissionIn, SubmissionOut, PickOut,
     AdminResultsIn, ScoreOut, EntryDetailOut, EntryDetailPick,
-    SaveDraftIn, LoadDraftIn, SaveDraftOut,
+    SaveDraftIn, LoadDraftIn, SaveDraftOut, EditEntryIn,
 )
 from scoring import load_scoring_config, score_submission
 from seed import seed
@@ -34,9 +34,20 @@ def verify_password(pw: str, hashed: str) -> bool:
     return bcrypt.checkpw(pw.encode(), hashed.encode())
 
 
+def run_migrations():
+    from sqlalchemy import inspect, text
+    insp = inspect(engine)
+    if "users" in insp.get_table_names():
+        cols = [c["name"] for c in insp.get_columns("users")]
+        if "password_hash" not in cols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE users ADD COLUMN password_hash VARCHAR"))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
+    run_migrations()
     seed()
     yield
 
@@ -225,10 +236,14 @@ def submit_entry(data: SubmissionIn, db: Session = Depends(get_db)):
         raise HTTPException(400, "One or more prospect IDs are invalid.")
 
     token = uuid.uuid4().hex[:12]
+    pw_hash = hash_password(data.password)
+    if saved:
+        pw_hash = saved.password_hash
     user = User(
         first_name=data.first_name.strip(),
         last_name=data.last_name.strip(),
         email=email,
+        password_hash=pw_hash,
         submission_token=token,
     )
     db.add(user)
@@ -307,6 +322,47 @@ def get_entry(token: str, db: Session = Depends(get_db)):
         "picks": pick_details,
         "draft_order": DRAFT_ORDER,
     }
+
+
+# ── Edit entry ──────────────────────────────────────────────────────────
+
+DRAFT_LOCK = datetime.datetime(2026, 4, 23, 20, 0, 0)
+
+@app.put("/api/entry/{token}/edit")
+def edit_entry(token: str, data: EditEntryIn, db: Session = Depends(get_db)):
+    now_et = datetime.datetime.utcnow() - datetime.timedelta(hours=4)
+    if now_et >= DRAFT_LOCK:
+        raise HTTPException(403, "Edits are locked — the draft has started.")
+
+    user = db.query(User).filter(User.submission_token == token).first()
+    if not user:
+        raise HTTPException(404, "Entry not found.")
+
+    if not user.password_hash:
+        raise HTTPException(400, "This entry has no password set. Contact admin.")
+    if not verify_password(data.password, user.password_hash):
+        raise HTTPException(403, "Wrong password.")
+
+    if len(data.picks) != 32:
+        raise HTTPException(400, "Exactly 32 picks are required.")
+    slots = [p.slot_number for p in data.picks]
+    if sorted(slots) != list(range(1, 33)):
+        raise HTTPException(400, "Must fill slots 1-32 exactly once each.")
+    prospect_ids = [p.prospect_id for p in data.picks]
+    if len(set(prospect_ids)) != 32:
+        raise HTTPException(400, "Duplicate prospects are not allowed.")
+    count = db.query(Prospect).filter(Prospect.id.in_(prospect_ids)).count()
+    if count != 32:
+        raise HTTPException(400, "One or more prospect IDs are invalid.")
+
+    db.query(Pick).filter(Pick.user_id == user.id).delete()
+    for p in data.picks:
+        db.add(Pick(user_id=user.id, slot_number=p.slot_number, prospect_id=p.prospect_id))
+
+    user.submitted_at = datetime.datetime.utcnow()
+    db.commit()
+
+    return {"message": "Picks updated successfully.", "token": token}
 
 
 # ── Admin: submit results ───────────────────────────────────────────────
