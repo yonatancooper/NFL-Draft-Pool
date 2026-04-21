@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { getEntry, loadOwnPicks } from '../api';
+import { getEntry } from '../api';
 import PositionBadge from './PositionBadge';
 import { isDraftLocked } from './Countdown';
 
@@ -17,10 +17,6 @@ export default function EntryView() {
   const navigate = useNavigate();
   const [entry, setEntry] = useState(null);
   const [error, setError] = useState('');
-  const [showEditAuth, setShowEditAuth] = useState(false);
-  const [editEmail, setEditEmail] = useState('');
-  const [editPassword, setEditPassword] = useState('');
-  const [editError, setEditError] = useState('');
 
   useEffect(() => {
     getEntry(token).then(setEntry).catch(err => setError(err.message));
@@ -30,6 +26,12 @@ export default function EntryView() {
   if (!entry) return <div className="p-8 text-center text-gray-400">Loading...</div>;
 
   const shareUrl = window.location.href;
+  const isOwner = (() => {
+    try {
+      const s = JSON.parse(sessionStorage.getItem('draftPoolSession'));
+      return s && s.token === token;
+    } catch { return false; }
+  })();
 
   return (
     <div className="max-w-2xl mx-auto p-4">
@@ -61,56 +63,18 @@ export default function EntryView() {
           />
           <p className="text-[10px] text-gray-500 mt-1">Click to copy shareable link</p>
         </div>
-        {!isDraftLocked() && !entry.has_results && !showEditAuth && (
+        {!isDraftLocked() && !entry.has_results && isOwner && (
           <button
-            onClick={() => setShowEditAuth(true)}
+            onClick={() => navigate('/')}
             className="mt-3 w-full bg-blue-600 hover:bg-blue-500 rounded px-4 py-2 text-sm font-semibold"
           >
             Edit My Picks
           </button>
         )}
-        {showEditAuth && (
-          <div className="mt-3 space-y-2">
-            {editError && <div className="bg-red-900/50 text-red-300 rounded p-2 text-sm">{editError}</div>}
-            <input
-              type="email"
-              placeholder="Your email"
-              value={editEmail}
-              onChange={e => setEditEmail(e.target.value)}
-              className="w-full bg-gray-700 rounded px-3 py-2 text-white placeholder-gray-400 outline-none focus:ring-1 focus:ring-blue-500"
-            />
-            <input
-              type="password"
-              placeholder="Your password"
-              value={editPassword}
-              onChange={e => setEditPassword(e.target.value)}
-              onKeyDown={e => {
-                if (e.key === 'Enter') {
-                  setEditError('');
-                  loadOwnPicks({ email: editEmail, password: editPassword })
-                    .then(() => navigate(`/?edit=${token}&email=${encodeURIComponent(editEmail)}&pw=${encodeURIComponent(editPassword)}`))
-                    .catch(err => setEditError(err.message));
-                }
-              }}
-              className="w-full bg-gray-700 rounded px-3 py-2 text-white placeholder-gray-400 outline-none focus:ring-1 focus:ring-blue-500"
-            />
-            <div className="flex gap-2">
-              <button onClick={() => setShowEditAuth(false)} className="flex-1 bg-gray-700 hover:bg-gray-600 rounded py-2 text-sm">
-                Cancel
-              </button>
-              <button
-                onClick={() => {
-                  setEditError('');
-                  loadOwnPicks({ email: editEmail, password: editPassword })
-                    .then(() => navigate(`/?edit=${token}&email=${encodeURIComponent(editEmail)}&pw=${encodeURIComponent(editPassword)}`))
-                    .catch(err => setEditError(err.message));
-                }}
-                className="flex-1 bg-blue-600 hover:bg-blue-500 rounded py-2 text-sm font-semibold"
-              >
-                Continue
-              </button>
-            </div>
-          </div>
+        {!isDraftLocked() && !entry.has_results && !isOwner && (
+          <p className="mt-3 text-xs text-gray-500 text-center">
+            To edit picks, sign in on the <Link to="/" className="text-green-400 hover:text-green-300 underline">Draft Board</Link> page.
+          </p>
         )}
       </div>
 

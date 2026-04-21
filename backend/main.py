@@ -133,6 +133,45 @@ def check_email(email: str, db: Session = Depends(get_db)):
     return {"submitted": False}
 
 
+# ── Sign in ─────────────────────────────────────────────────────────────
+
+@app.post("/api/auth/sign-in")
+def sign_in(data: LoadDraftIn, db: Session = Depends(get_db)):
+    email = data.email.strip().lower()
+    if not data.password or len(data.password) < 4:
+        raise HTTPException(400, "Password must be at least 4 characters.")
+
+    user = db.query(User).filter(User.email == email).first()
+    if user:
+        if not user.password_hash:
+            user.password_hash = hash_password(data.password)
+            db.commit()
+        elif not verify_password(data.password, user.password_hash):
+            raise HTTPException(403, "Wrong password.")
+
+        picks = sorted(user.picks, key=lambda x: x.slot_number)
+        return {
+            "status": "submitted",
+            "token": user.submission_token,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "picks": [{"slot_number": p.slot_number, "prospect_id": p.prospect_id} for p in picks],
+        }
+
+    saved = db.query(SavedDraft).filter(SavedDraft.email == email).first()
+    if saved:
+        if not verify_password(data.password, saved.password_hash):
+            raise HTTPException(403, "Wrong password.")
+        return {
+            "status": "draft",
+            "first_name": saved.first_name,
+            "last_name": saved.last_name,
+            "board": json.loads(saved.board_json),
+        }
+
+    return {"status": "new"}
+
+
 # ── Save draft (pre-submission progress) ─────────────────────────────────
 
 @app.post("/api/drafts/save")

@@ -1,13 +1,14 @@
 import { useState, useEffect } from 'react';
 import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd';
-import { getProspects, getDraftOrder, submitEntry, checkEmail, saveDraft, loadDraft, loadOwnPicks, updateEntry } from '../api';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { getProspects, getDraftOrder, submitEntry, saveDraft, updateEntry, signIn } from '../api';
+import { useNavigate } from 'react-router-dom';
 import PositionBadge, { GradeBadge } from './PositionBadge';
 import HowToPlay from './HowToPlay';
 import { isDraftLocked } from './Countdown';
 
 const POSITIONS = ['ALL', 'QB', 'RB', 'WR', 'TE', 'OT', 'G', 'C', 'DT', 'EDGE', 'LB', 'CB', 'S'];
 const GRADES = ['ALL', '1st', '2nd', '3rd', 'Day 3+'];
+const SESSION_KEY = 'draftPoolSession';
 
 function matchesGradeFilter(grade, filter) {
   if (filter === 'ALL') return true;
@@ -15,52 +16,82 @@ function matchesGradeFilter(grade, filter) {
   if (filter === '1st') return grade === '1st';
   if (filter === '2nd') return grade === '1st-2nd' || grade === '2nd';
   if (filter === '3rd') return grade === '2nd-3rd' || grade === '3rd';
-  // Day 3+
   return grade.includes('3rd-4th') || grade.includes('4th') || grade.includes('5th') || grade.includes('6th') || grade.includes('7th');
 }
 
+function getSession() {
+  try { return JSON.parse(sessionStorage.getItem(SESSION_KEY)); } catch { return null; }
+}
+function storeSession(s) { sessionStorage.setItem(SESSION_KEY, JSON.stringify(s)); }
+function clearSession() { sessionStorage.removeItem(SESSION_KEY); }
+
 export default function DraftPage() {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
   const [prospects, setProspects] = useState([]);
   const [draftOrder, setDraftOrder] = useState([]);
-  const [board, setBoard] = useState({}); // { slotNumber: prospect }
+  const [board, setBoard] = useState({});
   const [search, setSearch] = useState('');
   const [posFilter, setPosFilter] = useState('ALL');
   const [gradeFilter, setGradeFilter] = useState('ALL');
-  const [showSubmit, setShowSubmit] = useState(false);
   const [showHowTo, setShowHowTo] = useState(false);
-  const [showSaveLoad, setShowSaveLoad] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [expandedProspect, setExpandedProspect] = useState(null);
   const [selectedSlot, setSelectedSlot] = useState(null);
-  const [form, setForm] = useState({ first_name: '', last_name: '', email: '', password: '' });
-  const [error, setError] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [saveMsg, setSaveMsg] = useState('');
-  const [saveError, setSaveError] = useState('');
+
+  // Session
+  const [session, setSession] = useState(null);
+  const [authForm, setAuthForm] = useState({ email: '', password: '', first_name: '', last_name: '' });
+  const [authError, setAuthError] = useState('');
+  const [needsName, setNeedsName] = useState(false);
+  const [signingIn, setSigningIn] = useState(false);
+
+  // Save / submit
   const [saving, setSaving] = useState(false);
-  const [lastSaved, setLastSaved] = useState(null);
-  const [editToken, setEditToken] = useState(null);
+  const [saveMsg, setSaveMsg] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [showConfirmSubmit, setShowConfirmSubmit] = useState(false);
+  const [error, setError] = useState('');
+
+  function loadBoardFromPicks(picks, prospectList) {
+    const newBoard = {};
+    for (const pick of picks) {
+      const p = prospectList.find(pr => pr.id === pick.prospect_id);
+      if (p) newBoard[pick.slot_number] = p;
+    }
+    return newBoard;
+  }
+
+  function loadBoardFromDraft(boardData, prospectList) {
+    const newBoard = {};
+    for (const [slot, prospectId] of Object.entries(boardData)) {
+      const p = prospectList.find(pr => pr.id === prospectId);
+      if (p) newBoard[parseInt(slot)] = p;
+    }
+    return newBoard;
+  }
 
   useEffect(() => {
     Promise.all([getProspects(), getDraftOrder()]).then(([p, d]) => {
       setProspects(p);
       setDraftOrder(d);
-      const editParam = searchParams.get('edit');
-      const emailParam = searchParams.get('email');
-      const pwParam = searchParams.get('pw');
-      if (editParam && emailParam && pwParam) {
-        loadOwnPicks({ email: emailParam, password: pwParam }).then(data => {
-          const newBoard = {};
-          for (const pick of data.picks) {
-            const prospect = p.find(pr => pr.id === pick.predicted_prospect.id);
-            if (prospect) newBoard[pick.slot_number] = prospect;
-          }
-          setBoard(newBoard);
-          setForm(f => ({ ...f, first_name: data.first_name, last_name: data.last_name, email: emailParam, password: pwParam }));
-          setEditToken(editParam);
-        }).catch(() => {});
+      const saved = getSession();
+      if (saved) {
+        signIn({ email: saved.email, password: saved.password })
+          .then(data => {
+            let s;
+            if (data.status === 'submitted') {
+              s = { ...saved, token: data.token, firstName: data.first_name, lastName: data.last_name };
+              setBoard(loadBoardFromPicks(data.picks, p));
+            } else if (data.status === 'draft') {
+              s = { ...saved, token: null, firstName: data.first_name, lastName: data.last_name };
+              setBoard(loadBoardFromDraft(data.board, p));
+            } else {
+              s = saved;
+            }
+            storeSession(s);
+            setSession(s);
+          })
+          .catch(() => { clearSession(); });
       }
     });
   }, []);
@@ -72,144 +103,95 @@ export default function DraftPage() {
     .filter(p => matchesGradeFilter(p.brugler_grade, gradeFilter))
     .filter(p => !search || p.name.toLowerCase().includes(search.toLowerCase()));
 
-  function onDragEnd(result) {
-    const { source, destination, draggableId } = result;
-    if (!destination) return;
+  // ── Sign in ──────────────────────────────────────────────────────────
 
-    const srcType = source.droppableId;
-    const dstType = destination.droppableId;
-
-    if (srcType === 'sidebar' && dstType.startsWith('slot-')) {
-      const slot = parseInt(dstType.replace('slot-', ''));
-      const prospect = prospects.find(p => p.id === parseInt(draggableId.replace('prospect-', '')));
-      if (!prospect) return;
-      const newBoard = { ...board };
-      newBoard[slot] = prospect;
-      setBoard(newBoard);
-    } else if (srcType.startsWith('slot-') && dstType.startsWith('slot-')) {
-      const srcSlot = parseInt(srcType.replace('slot-', ''));
-      const dstSlot = parseInt(dstType.replace('slot-', ''));
-      if (srcSlot === dstSlot) return;
-      const newBoard = { ...board };
-      const srcProspect = newBoard[srcSlot];
-      const dstProspect = newBoard[dstSlot];
-      newBoard[dstSlot] = srcProspect;
-      if (dstProspect) {
-        newBoard[srcSlot] = dstProspect;
-      } else {
-        delete newBoard[srcSlot];
+  async function handleSignIn() {
+    setAuthError('');
+    if (!authForm.email.trim()) { setAuthError('Enter your email.'); return; }
+    if (!authForm.password || authForm.password.length < 4) { setAuthError('Password must be at least 4 characters.'); return; }
+    setSigningIn(true);
+    try {
+      const data = await signIn({ email: authForm.email, password: authForm.password });
+      if (data.status === 'new') {
+        if (!needsName) { setNeedsName(true); setSigningIn(false); return; }
+        if (!authForm.first_name.trim() || !authForm.last_name.trim()) { setAuthError('Enter your first and last name.'); setSigningIn(false); return; }
+        const s = { email: authForm.email, password: authForm.password, firstName: authForm.first_name.trim(), lastName: authForm.last_name.trim(), token: null };
+        storeSession(s);
+        setSession(s);
+      } else if (data.status === 'draft') {
+        const s = { email: authForm.email, password: authForm.password, firstName: data.first_name, lastName: data.last_name, token: null };
+        storeSession(s);
+        setSession(s);
+        setBoard(loadBoardFromDraft(data.board, prospects));
+      } else if (data.status === 'submitted') {
+        const s = { email: authForm.email, password: authForm.password, firstName: data.first_name, lastName: data.last_name, token: data.token };
+        storeSession(s);
+        setSession(s);
+        setBoard(loadBoardFromPicks(data.picks, prospects));
       }
-      setBoard(newBoard);
+    } catch (err) {
+      setAuthError(err.message);
+    } finally {
+      setSigningIn(false);
     }
   }
 
-  function removeFromSlot(slot) {
-    const newBoard = { ...board };
-    delete newBoard[slot];
-    setBoard(newBoard);
+  function handleSignOut() {
+    clearSession();
+    setSession(null);
+    setBoard({});
+    setAuthForm({ email: '', password: '', first_name: '', last_name: '' });
+    setNeedsName(false);
+    setAuthError('');
+    setSaveMsg('');
+    setError('');
   }
 
-  function assignProspectToSlot(prospect) {
-    if (selectedSlot == null) return;
-    const newBoard = { ...board };
-    newBoard[selectedSlot] = prospect;
-    setBoard(newBoard);
-    // Auto-advance to next empty slot
-    const nextEmpty = draftOrder.find(s => s.pick > selectedSlot && !newBoard[s.pick]);
-    setSelectedSlot(nextEmpty ? nextEmpty.pick : null);
-  }
-
-  function handleSlotClick(slotPick) {
-    if (board[slotPick]) {
-      setSelectedSlot(selectedSlot === slotPick ? null : slotPick);
-    } else {
-      setSelectedSlot(selectedSlot === slotPick ? null : slotPick);
-    }
-  }
-
-  // ── Save / Load draft ──────────────────────────────────────────────────
+  // ── Save / Submit ────────────────────────────────────────────────────
 
   async function handleSave() {
-    setSaveError('');
-    setSaveMsg('');
-    if (!form.email.trim()) { setSaveError('Enter your email to save.'); return; }
-    if (!form.first_name.trim() || !form.last_name.trim()) { setSaveError('Enter your name to save.'); return; }
-    if (!form.password || form.password.length < 4) { setSaveError('Password must be at least 4 characters.'); return; }
-    if (isDraftLocked()) { setSaveError('Draft has started \u2014 saves are locked.'); return; }
-
+    if (!session || isDraftLocked()) return;
     setSaving(true);
+    setSaveMsg('');
+    setError('');
     try {
-      const boardData = {};
-      for (const [slot, prospect] of Object.entries(board)) {
-        boardData[slot] = prospect.id;
+      if (session.token) {
+        const picks = Object.entries(board).map(([slot, prospect]) => ({
+          slot_number: parseInt(slot), prospect_id: prospect.id,
+        }));
+        await updateEntry(session.token, { email: session.email, password: session.password, picks });
+        setSaveMsg('Picks updated!');
+      } else {
+        const boardData = {};
+        for (const [slot, prospect] of Object.entries(board)) boardData[slot] = prospect.id;
+        await saveDraft({ email: session.email, password: session.password, first_name: session.firstName, last_name: session.lastName, board: boardData });
+        setSaveMsg('Draft saved!');
       }
-      await saveDraft({ email: form.email, password: form.password, first_name: form.first_name, last_name: form.last_name, board: boardData });
-      setLastSaved(new Date());
-      setSaveMsg('Draft saved!');
       setTimeout(() => setSaveMsg(''), 3000);
     } catch (err) {
-      setSaveError(err.message);
+      setError(err.message);
     } finally {
       setSaving(false);
     }
   }
 
-  async function handleLoad() {
-    setSaveError('');
-    setSaveMsg('');
-    if (!form.email.trim()) { setSaveError('Enter your email to load.'); return; }
-    if (!form.password) { setSaveError('Enter your password to load.'); return; }
-
-    try {
-      const data = await loadDraft({ email: form.email, password: form.password });
-      if (data.submitted) {
-        navigate(`/entry/${data.token}`);
-        return;
-      }
-      if (!data.found) {
-        setSaveError('No saved draft found for this email.');
-        return;
-      }
-      // Rebuild board from saved data
-      const newBoard = {};
-      for (const [slot, prospectId] of Object.entries(data.board)) {
-        const prospect = prospects.find(p => p.id === prospectId);
-        if (prospect) newBoard[parseInt(slot)] = prospect;
-      }
-      setBoard(newBoard);
-      setForm(f => ({ ...f, first_name: data.first_name, last_name: data.last_name }));
-      setLastSaved(new Date(data.updated_at));
-      setSaveMsg('Draft loaded!');
-      setShowSaveLoad(false);
-      setTimeout(() => setSaveMsg(''), 3000);
-    } catch (err) {
-      setSaveError(err.message);
-    }
-  }
-
-  async function handleSubmit(e) {
-    e.preventDefault();
+  async function handleSubmit() {
+    if (!session || isDraftLocked()) return;
     setError('');
-    if (Object.keys(board).length !== 32) { setError('Fill all 32 slots before submitting.'); return; }
-    if (!form.password || form.password.length < 4) { setError('Password must be at least 4 characters.'); return; }
-    if (isDraftLocked()) { setError('Submissions are locked — the draft has started.'); return; }
-
     setSubmitting(true);
     try {
       const picks = Object.entries(board).map(([slot, prospect]) => ({
-        slot_number: parseInt(slot),
-        prospect_id: prospect.id,
+        slot_number: parseInt(slot), prospect_id: prospect.id,
       }));
-      if (editToken) {
-        await updateEntry(editToken, { email: form.email, password: form.password, picks });
-        navigate(`/entry/${editToken}`);
-      } else {
-        if (!form.first_name.trim() || !form.last_name.trim() || !form.email.trim()) { setError('All fields are required.'); setSubmitting(false); return; }
-        const emailCheck = await checkEmail(form.email);
-        if (emailCheck.submitted) { navigate(`/entry/${emailCheck.token}`); return; }
-        const result = await submitEntry({ first_name: form.first_name, last_name: form.last_name, email: form.email, password: form.password, picks });
-        navigate(`/entry/${result.token}`);
-      }
+      const result = await submitEntry({
+        first_name: session.firstName, last_name: session.lastName,
+        email: session.email, password: session.password, picks,
+      });
+      const newSession = { ...session, token: result.token };
+      storeSession(newSession);
+      setSession(newSession);
+      setShowConfirmSubmit(false);
+      navigate(`/entry/${result.token}`);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -217,7 +199,59 @@ export default function DraftPage() {
     }
   }
 
+  // ── Board interactions ────────────────────────────────────────────────
+
+  function onDragEnd(result) {
+    const { source, destination, draggableId } = result;
+    if (!destination) return;
+    const srcType = source.droppableId;
+    const dstType = destination.droppableId;
+
+    if (srcType === 'sidebar' && dstType.startsWith('slot-')) {
+      const slot = parseInt(dstType.replace('slot-', ''));
+      const prospect = prospects.find(p => p.id === parseInt(draggableId.replace('prospect-', '')));
+      if (prospect) setBoard(b => ({ ...b, [slot]: prospect }));
+    } else if (srcType.startsWith('slot-') && dstType.startsWith('slot-')) {
+      const srcSlot = parseInt(srcType.replace('slot-', ''));
+      const dstSlot = parseInt(dstType.replace('slot-', ''));
+      if (srcSlot === dstSlot) return;
+      setBoard(b => {
+        const newBoard = { ...b };
+        const srcP = newBoard[srcSlot];
+        const dstP = newBoard[dstSlot];
+        newBoard[dstSlot] = srcP;
+        if (dstP) newBoard[srcSlot] = dstP;
+        else delete newBoard[srcSlot];
+        return newBoard;
+      });
+    }
+  }
+
+  function removeFromSlot(slot) {
+    setBoard(b => { const n = { ...b }; delete n[slot]; return n; });
+  }
+
+  function assignProspectToSlot(prospect) {
+    if (selectedSlot == null) return;
+    const newBoard = { ...board, [selectedSlot]: prospect };
+    setBoard(newBoard);
+    const nextEmpty = draftOrder.find(s => s.pick > selectedSlot && !newBoard[s.pick]);
+    setSelectedSlot(nextEmpty ? nextEmpty.pick : null);
+  }
+
+  function handleSlotClick(slotPick) {
+    setSelectedSlot(selectedSlot === slotPick ? null : slotPick);
+  }
+
+  function clearBoard() {
+    if (Object.keys(board).length === 0) return;
+    if (!confirm('Clear all picks from the board?')) return;
+    setBoard({});
+    setSelectedSlot(null);
+  }
+
   const filledCount = Object.keys(board).length;
+  const locked = isDraftLocked();
 
   return (
     <DragDropContext onDragEnd={onDragEnd}>
@@ -325,7 +359,6 @@ export default function DraftPage() {
                           {p.forty_time ? <><span>&middot;</span><span>{p.forty_time}s</span></> : null}
                           {p.hand_size ? <><span>&middot;</span><span>{p.hand_size}&quot;</span></> : null}
                         </div>
-                        {/* Expanded card */}
                         {expandedProspect === p.id && (
                           <div className="mt-2 ml-8 p-2 bg-gray-900/60 rounded text-[11px] text-gray-300 space-y-1"
                                onClick={e => e.stopPropagation()}>
@@ -356,35 +389,127 @@ export default function DraftPage() {
         {/* Draft Board */}
         <div className="flex-1 overflow-y-auto p-4">
           <div className="max-w-2xl mx-auto">
+            {/* Header */}
             <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
-              <h1 className="text-2xl font-bold">Your Mock Draft</h1>
+              <div>
+                <h1 className="text-2xl font-bold">Your Mock Draft</h1>
+                {session && (
+                  <p className="text-xs text-gray-400 mt-0.5">
+                    {session.firstName} {session.lastName}
+                    {session.token ? (
+                      <span className="text-green-400 ml-1">&middot; Submitted</span>
+                    ) : (
+                      <span className="text-yellow-400 ml-1">&middot; Draft in progress</span>
+                    )}
+                  </p>
+                )}
+              </div>
               <div className="flex items-center gap-2 flex-wrap">
                 <span className={`text-sm font-semibold ${filledCount === 32 ? 'text-green-400' : 'text-gray-400'}`}>
                   {filledCount}/32
                 </span>
-                {!isDraftLocked() && (
+                {session && !locked && filledCount > 0 && (
                   <button
-                    onClick={() => setShowSaveLoad(true)}
+                    onClick={handleSave}
+                    disabled={saving}
+                    className="bg-gray-700 hover:bg-gray-600 text-white px-3 py-1.5 rounded text-sm disabled:opacity-50"
+                  >
+                    {saving ? 'Saving...' : (session.token ? 'Save Changes' : 'Save Draft')}
+                  </button>
+                )}
+                {session && !session.token && filledCount === 32 && !locked && (
+                  <button
+                    onClick={() => setShowConfirmSubmit(true)}
+                    className="bg-green-600 hover:bg-green-500 text-white px-4 py-1.5 rounded text-sm font-semibold"
+                  >
+                    Submit Entry
+                  </button>
+                )}
+                {session && session.token && (
+                  <button
+                    onClick={() => navigate(`/entry/${session.token}`)}
                     className="bg-gray-700 hover:bg-gray-600 text-white px-3 py-1.5 rounded text-sm"
                   >
-                    Save / Load
+                    View Entry
+                  </button>
+                )}
+                {filledCount > 0 && !locked && (
+                  <button onClick={clearBoard} className="text-xs text-gray-500 hover:text-red-400">
+                    Clear
+                  </button>
+                )}
+                {session && (
+                  <button onClick={handleSignOut} className="text-xs text-gray-500 hover:text-white ml-1">
+                    Sign Out
                   </button>
                 )}
                 {saveMsg && <span className="text-green-400 text-xs">{saveMsg}</span>}
-                {filledCount === 32 && !isDraftLocked() && (
-                  <button
-                    onClick={() => setShowSubmit(true)}
-                    className="bg-green-600 hover:bg-green-500 text-white px-4 py-1.5 rounded text-sm font-semibold"
-                  >
-                    {editToken ? 'Update Picks' : 'Submit Entry'}
-                  </button>
-                )}
               </div>
             </div>
-            {lastSaved && (
-              <p className="text-[10px] text-gray-500 mb-2">Last saved: {lastSaved.toLocaleString()}</p>
+
+            {error && (
+              <div className="bg-red-900/50 text-red-300 rounded p-2 mb-3 text-sm">{error}</div>
             )}
 
+            {/* Sign in banner */}
+            {!session && !locked && (
+              <div className="bg-gray-800 rounded-xl p-4 mb-4 border border-gray-700">
+                <p className="text-sm text-gray-300 mb-3">Sign in to save your progress and submit your entry</p>
+                {authError && <div className="bg-red-900/50 text-red-300 rounded p-2 mb-3 text-sm">{authError}</div>}
+                <div className="space-y-2">
+                  <div className="flex gap-2">
+                    <input
+                      type="email"
+                      placeholder="Email"
+                      value={authForm.email}
+                      onChange={e => setAuthForm({ ...authForm, email: e.target.value })}
+                      onKeyDown={e => e.key === 'Enter' && handleSignIn()}
+                      className="flex-1 bg-gray-700 rounded px-3 py-2 text-sm text-white placeholder-gray-400 outline-none focus:ring-1 focus:ring-green-500"
+                    />
+                    <input
+                      type="password"
+                      placeholder="Password"
+                      value={authForm.password}
+                      onChange={e => setAuthForm({ ...authForm, password: e.target.value })}
+                      onKeyDown={e => e.key === 'Enter' && handleSignIn()}
+                      className="flex-1 bg-gray-700 rounded px-3 py-2 text-sm text-white placeholder-gray-400 outline-none focus:ring-1 focus:ring-green-500"
+                    />
+                  </div>
+                  {needsName && (
+                    <div className="flex gap-2">
+                      <input
+                        placeholder="First name"
+                        value={authForm.first_name}
+                        onChange={e => setAuthForm({ ...authForm, first_name: e.target.value })}
+                        onKeyDown={e => e.key === 'Enter' && handleSignIn()}
+                        className="flex-1 bg-gray-700 rounded px-3 py-2 text-sm text-white placeholder-gray-400 outline-none focus:ring-1 focus:ring-green-500"
+                      />
+                      <input
+                        placeholder="Last name"
+                        value={authForm.last_name}
+                        onChange={e => setAuthForm({ ...authForm, last_name: e.target.value })}
+                        onKeyDown={e => e.key === 'Enter' && handleSignIn()}
+                        className="flex-1 bg-gray-700 rounded px-3 py-2 text-sm text-white placeholder-gray-400 outline-none focus:ring-1 focus:ring-green-500"
+                      />
+                    </div>
+                  )}
+                  <button
+                    onClick={handleSignIn}
+                    disabled={signingIn}
+                    className="w-full bg-green-600 hover:bg-green-500 rounded py-2 text-sm font-semibold disabled:opacity-50"
+                  >
+                    {signingIn ? 'Signing in...' : needsName ? 'Create Account & Start' : 'Sign In'}
+                  </button>
+                  <p className="text-[10px] text-gray-500">
+                    {needsName
+                      ? 'Enter your name to create a new account.'
+                      : 'New user? Just enter an email and password to get started.'}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Board slots */}
             <div className="space-y-2">
               {draftOrder.map(slot => {
                 const prospect = board[slot.pick];
@@ -454,120 +579,27 @@ export default function DraftPage() {
           </div>
         </div>
 
-        {/* Save/Load Modal */}
-        {showSaveLoad && (
-          <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={() => setShowSaveLoad(false)}>
-            <div className="bg-gray-800 rounded-xl max-w-md w-full p-6" onClick={e => e.stopPropagation()}>
-              <h2 className="text-xl font-bold text-green-400 mb-2">Save / Load Draft</h2>
-              <p className="text-xs text-gray-400 mb-4">Save your progress and come back later. Your password protects your board from edits by others.</p>
-              {saveError && <div className="bg-red-900/50 text-red-300 rounded p-2 mb-3 text-sm">{saveError}</div>}
-              {saveMsg && <div className="bg-green-900/50 text-green-300 rounded p-2 mb-3 text-sm">{saveMsg}</div>}
-              <div className="space-y-3">
-                <input
-                  placeholder="First name"
-                  value={form.first_name}
-                  onChange={e => setForm({ ...form, first_name: e.target.value })}
-                  className="w-full bg-gray-700 rounded px-3 py-2 text-white placeholder-gray-400 outline-none focus:ring-1 focus:ring-green-500"
-                />
-                <input
-                  placeholder="Last name"
-                  value={form.last_name}
-                  onChange={e => setForm({ ...form, last_name: e.target.value })}
-                  className="w-full bg-gray-700 rounded px-3 py-2 text-white placeholder-gray-400 outline-none focus:ring-1 focus:ring-green-500"
-                />
-                <input
-                  type="email"
-                  placeholder="Email"
-                  value={form.email}
-                  onChange={e => setForm({ ...form, email: e.target.value })}
-                  className="w-full bg-gray-700 rounded px-3 py-2 text-white placeholder-gray-400 outline-none focus:ring-1 focus:ring-green-500"
-                />
-                <input
-                  type="password"
-                  placeholder="Password (min 4 chars)"
-                  value={form.password}
-                  onChange={e => setForm({ ...form, password: e.target.value })}
-                  className="w-full bg-gray-700 rounded px-3 py-2 text-white placeholder-gray-400 outline-none focus:ring-1 focus:ring-green-500"
-                />
-                <div className="flex gap-3 pt-2">
-                  <button onClick={handleLoad} className="flex-1 bg-gray-700 hover:bg-gray-600 rounded py-2 text-sm font-semibold">
-                    Load Draft
-                  </button>
-                  <button
-                    onClick={handleSave}
-                    disabled={saving || filledCount === 0}
-                    className="flex-1 bg-green-600 hover:bg-green-500 rounded py-2 text-sm font-semibold disabled:opacity-50"
-                  >
-                    {saving ? 'Saving...' : `Save Draft (${filledCount} picks)`}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Submission Modal */}
-        {showSubmit && (
-          <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={() => setShowSubmit(false)}>
-            <div className="bg-gray-800 rounded-xl max-w-md w-full p-6" onClick={e => e.stopPropagation()}>
-              <h2 className="text-xl font-bold text-green-400 mb-2">
-                {editToken ? 'Update Your Picks' : 'Submit Your Entry'}
-              </h2>
-              <p className="text-xs text-gray-400 mb-4">
-                {editToken
-                  ? 'Enter your password to save your updated picks.'
-                  : 'You can edit your picks anytime before the draft starts.'}
+        {/* Submit confirmation */}
+        {showConfirmSubmit && (
+          <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={() => setShowConfirmSubmit(false)}>
+            <div className="bg-gray-800 rounded-xl max-w-sm w-full p-6" onClick={e => e.stopPropagation()}>
+              <h2 className="text-xl font-bold text-green-400 mb-2">Submit Your Entry?</h2>
+              <p className="text-sm text-gray-400 mb-4">
+                Your 32 picks will be entered into the pool. You can still edit your picks anytime before the draft starts.
               </p>
               {error && <div className="bg-red-900/50 text-red-300 rounded p-2 mb-3 text-sm">{error}</div>}
-              <form onSubmit={handleSubmit} className="space-y-3">
-                {!editToken && (
-                  <>
-                    <input
-                      placeholder="First name"
-                      value={form.first_name}
-                      onChange={e => setForm({ ...form, first_name: e.target.value })}
-                      className="w-full bg-gray-700 rounded px-3 py-2 text-white placeholder-gray-400 outline-none focus:ring-1 focus:ring-green-500"
-                    />
-                    <input
-                      placeholder="Last name"
-                      value={form.last_name}
-                      onChange={e => setForm({ ...form, last_name: e.target.value })}
-                      className="w-full bg-gray-700 rounded px-3 py-2 text-white placeholder-gray-400 outline-none focus:ring-1 focus:ring-green-500"
-                    />
-                    <input
-                      type="email"
-                      placeholder="Email"
-                      value={form.email}
-                      onChange={e => setForm({ ...form, email: e.target.value })}
-                      className="w-full bg-gray-700 rounded px-3 py-2 text-white placeholder-gray-400 outline-none focus:ring-1 focus:ring-green-500"
-                    />
-                  </>
-                )}
-                {editToken && (
-                  <p className="text-sm text-gray-300">Updating picks for {form.first_name} {form.last_name}</p>
-                )}
-                {!editToken && (
-                  <input
-                    type="password"
-                    placeholder="Password (same as your saved draft)"
-                    value={form.password}
-                    onChange={e => setForm({ ...form, password: e.target.value })}
-                    className="w-full bg-gray-700 rounded px-3 py-2 text-white placeholder-gray-400 outline-none focus:ring-1 focus:ring-green-500"
-                  />
-                )}
-                <div className="flex gap-3 pt-2">
-                  <button type="button" onClick={() => setShowSubmit(false)} className="flex-1 bg-gray-700 hover:bg-gray-600 rounded py-2 text-sm">
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={submitting}
-                    className="flex-1 bg-green-600 hover:bg-green-500 rounded py-2 text-sm font-semibold disabled:opacity-50"
-                  >
-                    {submitting ? (editToken ? 'Updating...' : 'Submitting...') : (editToken ? 'Update Picks' : 'Submit Entry')}
-                  </button>
-                </div>
-              </form>
+              <div className="flex gap-3">
+                <button onClick={() => setShowConfirmSubmit(false)} className="flex-1 bg-gray-700 hover:bg-gray-600 rounded py-2 text-sm">
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSubmit}
+                  disabled={submitting}
+                  className="flex-1 bg-green-600 hover:bg-green-500 rounded py-2 text-sm font-semibold disabled:opacity-50"
+                >
+                  {submitting ? 'Submitting...' : 'Submit Entry'}
+                </button>
+              </div>
             </div>
           </div>
         )}

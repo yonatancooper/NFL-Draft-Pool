@@ -12,6 +12,7 @@ async function request(path, options = {}) {
   return res.json();
 }
 
+export const signIn = (data) => request('/auth/sign-in', { method: 'POST', body: JSON.stringify(data) });
 export const getProspects = () => request('/prospects');
 export const getDraftOrder = () => request('/draft-order');
 export const getScoringConfig = () => request('/scoring-config');
