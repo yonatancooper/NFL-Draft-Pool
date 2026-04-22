@@ -29,3 +29,6 @@ export const updateEntry = (token, data) => request(`/entry/${token}/edit`, { me
 export const loadOwnPicks = (data) => request('/entry/load-picks', { method: 'POST', body: JSON.stringify(data) });
 export const saveDraft = (data) => request('/drafts/save', { method: 'POST', body: JSON.stringify(data) });
 export const loadDraft = (data) => request('/drafts/load', { method: 'POST', body: JSON.stringify(data) });
+export const getLivePoller = (password) => request(`/admin/live-poller?password=${encodeURIComponent(password)}`);
+export const toggleLivePoller = (password, enabled) => request('/admin/live-poller/toggle', { method: 'POST', body: JSON.stringify({ password, enabled }) });
+export const confirmLivePoller = (password, overall, prospect_id) => request('/admin/live-poller/confirm', { method: 'POST', body: JSON.stringify({ password, overall, prospect_id }) });

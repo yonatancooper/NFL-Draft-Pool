@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { submitResults, getAdminStats, getProspects, getAdminEntries, deleteAdminEntry, editAdminPicks, getDraftOrder } from '../api';
+import { submitResults, getAdminStats, getProspects, getAdminEntries, deleteAdminEntry, editAdminPicks, getDraftOrder, getLivePoller, toggleLivePoller, confirmLivePoller } from '../api';
 
 export default function AdminPanel() {
   const [password, setPassword] = useState('');
@@ -16,6 +16,9 @@ export default function AdminPanel() {
   const [editingEntry, setEditingEntry] = useState(null);
   const [editBoard, setEditBoard] = useState({});
   const [editSearch, setEditSearch] = useState('');
+  const [poller, setPoller] = useState(null);
+  const [overrideFor, setOverrideFor] = useState(null);  // overall # being overridden
+  const [overrideSearch, setOverrideSearch] = useState('');
 
   function doAuth() {
     getAdminStats(password)
@@ -28,12 +31,42 @@ export default function AdminPanel() {
       getProspects().then(setProspects).catch(() => {});
       getDraftOrder().then(setDraftOrder).catch(() => {});
       refreshEntries();
+      refreshPoller();
+      const t = setInterval(refreshPoller, 15000);
+      return () => clearInterval(t);
     }
   }, [authed]);
 
   function refreshEntries() {
     getAdminEntries(password).then(setEntries).catch(() => {});
     getAdminStats(password).then(setStats).catch(() => {});
+  }
+
+  function refreshPoller() {
+    getLivePoller(password).then(setPoller).catch(() => {});
+  }
+
+  async function handleTogglePoller() {
+    try {
+      const res = await toggleLivePoller(password, !poller?.enabled);
+      setMessage(`Live poller ${res.enabled ? 'enabled' : 'disabled'}.`);
+      refreshPoller();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function handleConfirmPending(overall, prospectId) {
+    try {
+      await confirmLivePoller(password, overall, prospectId);
+      setMessage(`Confirmed pick ${overall}.`);
+      setOverrideFor(null);
+      setOverrideSearch('');
+      refreshPoller();
+      refreshEntries();
+    } catch (err) {
+      setError(err.message);
+    }
   }
 
   async function handleSubmitResults() {
@@ -198,6 +231,132 @@ export default function AdminPanel() {
           </div>
         )}
       </div>
+
+      {/* Live ESPN poller */}
+      {poller && (
+        <div className="bg-gray-800 rounded-xl p-4 mb-4">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="font-bold text-gray-300">
+              Live Draft Feed
+              <span className={`ml-2 text-xs px-2 py-0.5 rounded ${poller.enabled ? 'bg-green-900 text-green-300' : 'bg-gray-700 text-gray-400'}`}>
+                {poller.enabled ? 'ON' : 'OFF'}
+              </span>
+            </h2>
+            <button
+              onClick={handleTogglePoller}
+              className={`text-xs px-3 py-1 rounded ${poller.enabled ? 'bg-red-700 hover:bg-red-600' : 'bg-green-700 hover:bg-green-600'}`}
+            >
+              {poller.enabled ? 'Disable' : 'Enable'}
+            </button>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3 text-xs">
+            <div>
+              <div className="text-gray-500">Draft state</div>
+              <div className="text-white">{poller.draft_status?.description || '—'}</div>
+            </div>
+            <div>
+              <div className="text-gray-500">Last poll</div>
+              <div className="text-white">{poller.last_poll_at ? new Date(poller.last_poll_at).toLocaleTimeString() : '—'}</div>
+            </div>
+            <div>
+              <div className="text-gray-500">Pending review</div>
+              <div className="text-white">{poller.pending?.length || 0}</div>
+            </div>
+            <div>
+              <div className="text-gray-500">Last error</div>
+              <div className={poller.last_error ? 'text-red-400' : 'text-gray-600'}>{poller.last_error || 'none'}</div>
+            </div>
+          </div>
+
+          {poller.pending?.length > 0 && (
+            <div className="mb-3">
+              <h3 className="text-xs font-bold text-yellow-400 mb-2">Flagged picks — needs your confirmation</h3>
+              <div className="space-y-2">
+                {poller.pending.map(p => (
+                  <div key={p.overall} className="border border-yellow-700/50 bg-yellow-900/10 rounded p-2 text-xs">
+                    <div className="flex items-center justify-between mb-1">
+                      <div>
+                        <span className="font-bold text-white">Pick {p.overall}:</span>{' '}
+                        <span className="text-white">{p.player_name}</span>{' '}
+                        <span className="text-gray-500">({p.school})</span>
+                      </div>
+                      <span className="text-gray-500">conf={p.confidence}</span>
+                    </div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-gray-400">Best guess:</span>
+                      <span className="text-white">{p.matched_prospect_name} ({p.matched_school})</span>
+                      <button
+                        onClick={() => handleConfirmPending(p.overall, p.matched_prospect_id)}
+                        className="bg-green-700 hover:bg-green-600 px-2 py-0.5 rounded text-xs"
+                      >
+                        Confirm
+                      </button>
+                      <button
+                        onClick={() => { setOverrideFor(p.overall); setOverrideSearch(''); }}
+                        className="bg-blue-700 hover:bg-blue-600 px-2 py-0.5 rounded text-xs"
+                      >
+                        Override
+                      </button>
+                    </div>
+                    {overrideFor === p.overall && (
+                      <div className="mt-2 border-t border-yellow-700/40 pt-2">
+                        <input
+                          placeholder="Search prospect to pick manually..."
+                          value={overrideSearch}
+                          onChange={e => setOverrideSearch(e.target.value)}
+                          className="w-full bg-gray-700 rounded px-2 py-1 text-xs text-white mb-2"
+                        />
+                        <div className="max-h-40 overflow-y-auto space-y-1">
+                          {prospects
+                            .filter(pr => !overrideSearch || pr.name.toLowerCase().includes(overrideSearch.toLowerCase()))
+                            .slice(0, 15)
+                            .map(pr => (
+                              <button
+                                key={pr.id}
+                                onClick={() => handleConfirmPending(p.overall, pr.id)}
+                                className="w-full text-left text-xs p-1 rounded bg-gray-750 hover:bg-gray-700"
+                              >
+                                <span className="text-white">{pr.name}</span>{' '}
+                                <span className="text-gray-500">{pr.position} — {pr.school}</span>
+                              </button>
+                            ))}
+                        </div>
+                        <button
+                          onClick={() => setOverrideFor(null)}
+                          className="mt-2 text-xs text-gray-500 hover:text-gray-300"
+                        >
+                          Cancel override
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {poller.events?.length > 0 && (
+            <div>
+              <h3 className="text-xs font-bold text-gray-400 mb-1">Recent activity</h3>
+              <div className="max-h-40 overflow-y-auto text-xs font-mono space-y-0.5">
+                {[...poller.events].reverse().slice(0, 20).map((ev, i) => (
+                  <div key={i} className="flex gap-2">
+                    <span className="text-gray-600">{new Date(ev.at).toLocaleTimeString()}</span>
+                    <span className={
+                      ev.kind === 'auto' ? 'text-green-400' :
+                      ev.kind === 'flag' ? 'text-yellow-400' :
+                      ev.kind === 'confirm' ? 'text-blue-400' :
+                      ev.kind === 'error' ? 'text-red-400' :
+                      'text-gray-500'
+                    }>[{ev.kind}]</span>
+                    <span className="text-gray-300 flex-1 truncate">{ev.message}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Enter results */}
       <div className="bg-gray-800 rounded-xl p-4 mb-4">

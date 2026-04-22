@@ -1,6 +1,7 @@
 import os
 import uuid
 import json
+import asyncio
 import datetime
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -24,6 +25,7 @@ from schemas import (
 )
 from scoring import load_scoring_config, score_submission
 from seed import seed
+import espn_poller
 
 
 def hash_password(pw: str) -> str:
@@ -49,7 +51,15 @@ async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
     run_migrations()
     seed()
-    yield
+    poller_task = asyncio.create_task(espn_poller.poller_loop(DRAFT_LOCK))
+    try:
+        yield
+    finally:
+        poller_task.cancel()
+        try:
+            await poller_task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(title="NFL Draft Pool", lifespan=lifespan)
@@ -620,6 +630,38 @@ def admin_edit_picks(user_id: int, data: dict, db: Session = Depends(get_db)):
 
     db.commit()
     return {"message": f"Updated picks for {user.first_name} {user.last_name}."}
+
+
+# ── Admin: live ESPN poller ──────────────────────────────────────────────
+
+@app.get("/api/admin/live-poller")
+def admin_live_poller_status(password: str):
+    if password != ADMIN_PASSWORD:
+        raise HTTPException(403, "Invalid admin password.")
+    return espn_poller.get_status()
+
+
+@app.post("/api/admin/live-poller/toggle")
+def admin_live_poller_toggle(data: dict):
+    if data.get("password") != ADMIN_PASSWORD:
+        raise HTTPException(403, "Invalid admin password.")
+    enabled = bool(data.get("enabled", True))
+    espn_poller.set_enabled(enabled)
+    return {"enabled": enabled}
+
+
+@app.post("/api/admin/live-poller/confirm")
+def admin_live_poller_confirm(data: dict):
+    if data.get("password") != ADMIN_PASSWORD:
+        raise HTTPException(403, "Invalid admin password.")
+    overall = data.get("overall")
+    prospect_id = data.get("prospect_id")
+    if not isinstance(overall, int) or not isinstance(prospect_id, int):
+        raise HTTPException(400, "overall and prospect_id (int) are required.")
+    try:
+        return espn_poller.admin_confirm_pending(overall, prospect_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 # ── Serve frontend (production) ──────────────────────────────────────────
