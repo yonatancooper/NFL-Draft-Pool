@@ -268,27 +268,27 @@ async def poller_loop(draft_lock: datetime.datetime) -> None:
                 continue
 
             now = datetime.datetime.utcnow() - datetime.timedelta(hours=4)  # approx ET
+            past_window = now > window_end
 
-            if now < draft_lock:
-                # Pre-draft: check occasionally, don't spam
-                await asyncio.sleep(POLL_PRE_DRAFT)
-                continue
-
-            if now > window_end:
-                # Way past draft — stop polling (admin can still use manual entry)
-                log.info("Past active window, poller idle")
-                await asyncio.sleep(POLL_POST_DRAFT * 4)
-                continue
-
+            # Always fetch so the admin panel shows a live status heartbeat.
+            # Pre-draft: poll_once is effectively a no-op (all picks ON_THE_CLOCK).
             data = await fetch_draft(DRAFT_YEAR)
             with _state_lock:
                 _state["last_poll_at"] = datetime.datetime.utcnow().isoformat() + "Z"
                 _state["last_error"] = None
 
-            # Offload DB work off the event loop
             await asyncio.to_thread(poll_once, DRAFT_YEAR, data)
 
-            # Count how many Results exist to decide pace
+            if now < draft_lock:
+                await asyncio.sleep(POLL_PRE_DRAFT)
+                continue
+
+            if past_window:
+                log.info("Past active window, slowing poll cadence")
+                await asyncio.sleep(POLL_POST_DRAFT * 4)
+                continue
+
+            # During active draft: pace based on how many picks we've captured
             db = SessionLocal()
             try:
                 result_count = db.query(Result).count()
