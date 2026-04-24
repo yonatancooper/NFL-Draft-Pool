@@ -47,30 +47,39 @@ def run_migrations():
 
 
 def seed_draft_slots() -> None:
-    """Populate draft_slots from the hardcoded DRAFT_ORDER on first startup.
-    The ESPN poller keeps it in sync after that (including live trades)."""
+    """Upsert draft_slots from the hardcoded DRAFT_ORDER on every startup.
+
+    DRAFT_ORDER above is the authoritative final round-1 order. The ESPN
+    poller still refreshes this table on each poll, but this ensures the
+    baseline is correct even if the poller is disabled or ESPN is down.
+    """
     db = SessionLocal()
     try:
-        if db.query(DraftSlot).count() > 0:
-            return
         for row in DRAFT_ORDER:
             team_str = row["team"]
-            trade_note = None
+            trade_note = row.get("trade_note")
             team_name = team_str
-            lower = team_str.lower()
-            if "(from " in lower:
-                idx = lower.index("(from ")
-                team_name = team_str[:idx].strip()
-                note_body = team_str[idx + 1 : team_str.rindex(")")]  # "from CIN"
-                trade_note = note_body[0].upper() + note_body[1:]      # "From CIN"
-            db.add(DraftSlot(
-                slot_number=row["pick"],
-                team_id=None,
-                team_name=team_name,
-                team_abbr=row["abbr"],
-                trade_note=trade_note,
-                traded=1 if trade_note else 0,
-            ))
+            if trade_note and team_str.endswith(")"):
+                # Strip the "(From XYZ)" suffix to get just the team name.
+                open_idx = team_str.rfind("(")
+                if open_idx > 0:
+                    team_name = team_str[:open_idx].strip()
+
+            slot = db.query(DraftSlot).filter(DraftSlot.slot_number == row["pick"]).first()
+            if slot is None:
+                db.add(DraftSlot(
+                    slot_number=row["pick"],
+                    team_id=None,
+                    team_name=team_name,
+                    team_abbr=row["abbr"],
+                    trade_note=trade_note,
+                    traded=1 if trade_note else 0,
+                ))
+            else:
+                slot.team_name = team_name
+                slot.team_abbr = row["abbr"]
+                slot.trade_note = trade_note
+                slot.traded = 1 if trade_note else 0
         db.commit()
     finally:
         db.close()
@@ -124,40 +133,44 @@ app.add_middleware(
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "draftadmin2026")
 DRAFT_LOCK = datetime.datetime(2026, 4, 23, 20, 0, 0)
 
-# ── Draft order (2026 NFL Draft) ──────────────────────────────────────────
+# ── Draft order (2026 NFL Draft, FINAL as pulled from ESPN after round 1) ──
+# 13 trades in round 1. This is the authoritative baseline — the ESPN poller
+# may still update it if anything changes, but this hardcoded list matches
+# the final round-1 order so the app renders correctly even without the
+# poller / live API.
 DRAFT_ORDER = [
-    {"pick": 1,  "team": "Las Vegas Raiders", "abbr": "LV"},
-    {"pick": 2,  "team": "New York Jets", "abbr": "NYJ"},
-    {"pick": 3,  "team": "Arizona Cardinals", "abbr": "ARI"},
-    {"pick": 4,  "team": "Tennessee Titans", "abbr": "TEN"},
-    {"pick": 5,  "team": "New York Giants", "abbr": "NYG"},
-    {"pick": 6,  "team": "Cleveland Browns", "abbr": "CLE"},
-    {"pick": 7,  "team": "Washington Commanders", "abbr": "WAS"},
-    {"pick": 8,  "team": "New Orleans Saints", "abbr": "NO"},
-    {"pick": 9,  "team": "Kansas City Chiefs", "abbr": "KC"},
-    {"pick": 10, "team": "New York Giants (from CIN)", "abbr": "NYG"},
-    {"pick": 11, "team": "Miami Dolphins", "abbr": "MIA"},
-    {"pick": 12, "team": "Dallas Cowboys", "abbr": "DAL"},
-    {"pick": 13, "team": "Los Angeles Rams (from ATL)", "abbr": "LAR"},
-    {"pick": 14, "team": "Baltimore Ravens", "abbr": "BAL"},
-    {"pick": 15, "team": "Tampa Bay Buccaneers", "abbr": "TB"},
-    {"pick": 16, "team": "New York Jets (from IND)", "abbr": "NYJ"},
-    {"pick": 17, "team": "Detroit Lions", "abbr": "DET"},
-    {"pick": 18, "team": "Minnesota Vikings", "abbr": "MIN"},
-    {"pick": 19, "team": "Carolina Panthers", "abbr": "CAR"},
-    {"pick": 20, "team": "Dallas Cowboys (from GB)", "abbr": "DAL"},
-    {"pick": 21, "team": "Pittsburgh Steelers", "abbr": "PIT"},
-    {"pick": 22, "team": "Los Angeles Chargers", "abbr": "LAC"},
-    {"pick": 23, "team": "Philadelphia Eagles", "abbr": "PHI"},
-    {"pick": 24, "team": "Cleveland Browns (from JAX)", "abbr": "CLE"},
-    {"pick": 25, "team": "Chicago Bears", "abbr": "CHI"},
-    {"pick": 26, "team": "Buffalo Bills", "abbr": "BUF"},
-    {"pick": 27, "team": "San Francisco 49ers", "abbr": "SF"},
-    {"pick": 28, "team": "Houston Texans", "abbr": "HOU"},
-    {"pick": 29, "team": "Kansas City Chiefs (from LAR)", "abbr": "KC"},
-    {"pick": 30, "team": "Miami Dolphins (from DEN)", "abbr": "MIA"},
-    {"pick": 31, "team": "New England Patriots", "abbr": "NE"},
-    {"pick": 32, "team": "Seattle Seahawks", "abbr": "SEA"},
+    {"pick": 1,  "team": "Las Vegas Raiders",                              "abbr": "LV",  "trade_note": None},
+    {"pick": 2,  "team": "New York Jets",                                  "abbr": "NYJ", "trade_note": None},
+    {"pick": 3,  "team": "Arizona Cardinals",                              "abbr": "ARI", "trade_note": None},
+    {"pick": 4,  "team": "Tennessee Titans",                               "abbr": "TEN", "trade_note": None},
+    {"pick": 5,  "team": "New York Giants",                                "abbr": "NYG", "trade_note": None},
+    {"pick": 6,  "team": "Kansas City Chiefs (From CLE)",                  "abbr": "KC",  "trade_note": "From CLE"},
+    {"pick": 7,  "team": "Washington Commanders",                          "abbr": "WSH", "trade_note": None},
+    {"pick": 8,  "team": "New Orleans Saints",                             "abbr": "NO",  "trade_note": None},
+    {"pick": 9,  "team": "Cleveland Browns (From KC)",                     "abbr": "CLE", "trade_note": "From KC"},
+    {"pick": 10, "team": "New York Giants (From CIN)",                     "abbr": "NYG", "trade_note": "From CIN"},
+    {"pick": 11, "team": "Dallas Cowboys (From MIA)",                      "abbr": "DAL", "trade_note": "From MIA"},
+    {"pick": 12, "team": "Miami Dolphins (From DAL)",                      "abbr": "MIA", "trade_note": "From DAL"},
+    {"pick": 13, "team": "Los Angeles Rams (From ATL)",                    "abbr": "LAR", "trade_note": "From ATL"},
+    {"pick": 14, "team": "Baltimore Ravens",                               "abbr": "BAL", "trade_note": None},
+    {"pick": 15, "team": "Tampa Bay Buccaneers",                           "abbr": "TB",  "trade_note": None},
+    {"pick": 16, "team": "New York Jets (From IND)",                       "abbr": "NYJ", "trade_note": "From IND"},
+    {"pick": 17, "team": "Detroit Lions",                                  "abbr": "DET", "trade_note": None},
+    {"pick": 18, "team": "Minnesota Vikings",                              "abbr": "MIN", "trade_note": None},
+    {"pick": 19, "team": "Carolina Panthers",                              "abbr": "CAR", "trade_note": None},
+    {"pick": 20, "team": "Philadelphia Eagles (From GB via DAL)",          "abbr": "PHI", "trade_note": "From GB via DAL"},
+    {"pick": 21, "team": "Pittsburgh Steelers",                            "abbr": "PIT", "trade_note": None},
+    {"pick": 22, "team": "Los Angeles Chargers",                           "abbr": "LAC", "trade_note": None},
+    {"pick": 23, "team": "Dallas Cowboys (From PHI)",                      "abbr": "DAL", "trade_note": "From PHI"},
+    {"pick": 24, "team": "Cleveland Browns (From JAX)",                    "abbr": "CLE", "trade_note": "From JAX"},
+    {"pick": 25, "team": "Chicago Bears",                                  "abbr": "CHI", "trade_note": None},
+    {"pick": 26, "team": "Houston Texans (From BUF)",                      "abbr": "HOU", "trade_note": "From BUF"},
+    {"pick": 27, "team": "Miami Dolphins (From SF)",                       "abbr": "MIA", "trade_note": "From SF"},
+    {"pick": 28, "team": "New England Patriots (From HOU via BUF)",        "abbr": "NE",  "trade_note": "From HOU via BUF"},
+    {"pick": 29, "team": "Kansas City Chiefs (From LAR)",                  "abbr": "KC",  "trade_note": "From LAR"},
+    {"pick": 30, "team": "New York Jets (From DEN via MIA and SF)",        "abbr": "NYJ", "trade_note": "From DEN via MIA and SF"},
+    {"pick": 31, "team": "Tennessee Titans (From NE via BUF)",             "abbr": "TEN", "trade_note": "From NE via BUF"},
+    {"pick": 32, "team": "Seattle Seahawks",                               "abbr": "SEA", "trade_note": None},
 ]
 
 
