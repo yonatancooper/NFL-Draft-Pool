@@ -355,19 +355,24 @@ def get_entry(token: str, db: Session = Depends(get_db)):
         actual_by_prospect = {r.prospect_id: r.slot_number for r in results.values()}
 
     config = load_scoring_config() if has_results else None
+    results_count = len(results)
+    draft_complete = results_count >= len(DRAFT_ORDER)
 
     pick_details = []
     for p in picks:
+        slot_announced = p.slot_number in results
+        predicted_player_actual_slot = actual_by_prospect.get(p.prospect_id)
         detail = {
             "slot_number": p.slot_number,
             "predicted_prospect": p.prospect,
-            "actual_prospect": results[p.slot_number].prospect if p.slot_number in results else None,
+            "actual_prospect": results[p.slot_number].prospect if slot_announced else None,
+            "predicted_player_actual_slot": predicted_player_actual_slot,
+            "slot_announced": slot_announced,
             "points": 0,
             "distance": None,
         }
-        if has_results and p.prospect_id in actual_by_prospect:
-            actual_slot = actual_by_prospect[p.prospect_id]
-            distance = abs(p.slot_number - actual_slot)
+        if has_results and predicted_player_actual_slot is not None:
+            distance = abs(p.slot_number - predicted_player_actual_slot)
             from scoring import compute_distance_points
             pts = compute_distance_points(distance, config)
             pts += config["player_in_board_bonus"]
@@ -386,6 +391,9 @@ def get_entry(token: str, db: Session = Depends(get_db)):
         "total_score": total if has_results else None,
         "exact_picks": exact if has_results else None,
         "has_results": has_results,
+        "results_count": results_count,
+        "total_slots": len(DRAFT_ORDER),
+        "draft_complete": draft_complete,
         "picks_hidden": False,
         "picks": pick_details,
         "draft_order": DRAFT_ORDER,
@@ -535,19 +543,31 @@ def leaderboard(db: Session = Depends(get_db)):
             })
         return {"has_results": True, "entries": entries}
 
-    # Pre-draft: show all entrants without scores or tokens
+    # Pre-results: show all entrants without scores. Include tokens once
+    # the draft has locked so users can click through to view each other's picks.
+    now_et = datetime.datetime.utcnow() - datetime.timedelta(hours=4)
+    draft_locked = now_et >= DRAFT_LOCK
+
     users = db.query(User).order_by(User.submitted_at).all()
     entries = []
     for i, user in enumerate(users, start=1):
-        entries.append({
+        entry = {
             "rank": i,
             "first_name": user.first_name,
             "last_name": user.last_name,
             "total_score": None,
             "exact_picks": None,
             "submitted_at": user.submitted_at,
-        })
-    return {"has_results": False, "entry_count": len(entries), "entries": entries}
+        }
+        if draft_locked:
+            entry["token"] = user.submission_token
+        entries.append(entry)
+    return {
+        "has_results": False,
+        "draft_locked": draft_locked,
+        "entry_count": len(entries),
+        "entries": entries,
+    }
 
 
 # ── Admin: list all entries ──────────────────────────────────────────────

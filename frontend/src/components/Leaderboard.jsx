@@ -1,12 +1,46 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { getLeaderboard } from '../api';
+import { isDraftLocked } from './Countdown';
+
+const LIVE_POLL_MS = 15000;
 
 export default function Leaderboard() {
   const [data, setData] = useState(null);
+  const [updatedAt, setUpdatedAt] = useState(null);
+  const pollTimer = useRef(null);
 
   useEffect(() => {
-    getLeaderboard().then(setData).catch(() => {});
+    let cancelled = false;
+
+    async function load() {
+      try {
+        const d = await getLeaderboard();
+        if (cancelled) return;
+        setData(d);
+        setUpdatedAt(new Date());
+        // Keep polling while the draft is locked. Stop if 32 picks are in.
+        clearTimeout(pollTimer.current);
+        const draftDone = d.has_results && d.entries?.length > 0
+          && d.entries[0].total_score != null
+          && d.entries[0].exact_picks != null
+          && false; // we don't know 32/32 here; leave polling on until user navigates away
+        if (isDraftLocked() && !draftDone) {
+          pollTimer.current = setTimeout(load, LIVE_POLL_MS);
+        }
+      } catch {
+        // retry quietly
+        if (!cancelled && isDraftLocked()) {
+          clearTimeout(pollTimer.current);
+          pollTimer.current = setTimeout(load, LIVE_POLL_MS);
+        }
+      }
+    }
+    load();
+    return () => {
+      cancelled = true;
+      clearTimeout(pollTimer.current);
+    };
   }, []);
 
   if (!data) return <div className="p-8 text-center text-gray-400">Loading...</div>;
@@ -14,16 +48,38 @@ export default function Leaderboard() {
   const hasResults = data.has_results;
   const hasEntries = data.entries && data.entries.length > 0;
 
+  const showLive = isDraftLocked() && hasResults;
+
   return (
     <div className="max-w-3xl mx-auto p-4">
-      <h1 className="text-2xl font-bold text-green-400 mb-4">
-        {hasResults ? 'Leaderboard' : 'Pool Entries'}
-      </h1>
+      <div className="flex items-center justify-between flex-wrap gap-2 mb-4">
+        <h1 className="text-2xl font-bold text-green-400">
+          {hasResults ? 'Leaderboard' : 'Pool Entries'}
+        </h1>
+        {showLive && (
+          <div className="flex items-center gap-2">
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-red-900/40 border border-red-700 px-2.5 py-1 text-xs font-semibold text-red-300">
+              <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse" />
+              LIVE
+            </span>
+            {updatedAt && (
+              <span className="text-[10px] text-gray-500">
+                Updated {updatedAt.toLocaleTimeString()}
+              </span>
+            )}
+          </div>
+        )}
+      </div>
 
       {!hasResults && hasEntries && (
         <div className="bg-gray-800 rounded-lg p-3 mb-4 text-sm text-gray-400 text-center">
           <span className="text-2xl font-bold text-green-400">{data.entries.length}</span>
-          <span className="ml-2">{data.entries.length === 1 ? 'person has' : 'people have'} entered the pool so far. Scores will appear after the draft!</span>
+          <span className="ml-2">
+            {data.entries.length === 1 ? 'person has' : 'people have'} entered the pool so far.{' '}
+            {data.draft_locked
+              ? 'Picks are now unlocked — click a name to view their board. Scores will appear once results are entered.'
+              : 'Scores will appear after the draft!'}
+          </span>
         </div>
       )}
 
