@@ -16,8 +16,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from database import engine, get_db, Base
-from models import Prospect, User, Pick, Result, Score, SavedDraft
+from database import engine, get_db, Base, SessionLocal
+from models import Prospect, User, Pick, Result, Score, SavedDraft, DraftSlot
 from schemas import (
     ProspectOut, SubmissionIn, SubmissionOut, PickOut,
     AdminResultsIn, ScoreOut, EntryDetailOut, EntryDetailPick,
@@ -46,11 +46,60 @@ def run_migrations():
                 conn.execute(text("ALTER TABLE users ADD COLUMN password_hash VARCHAR"))
 
 
+def seed_draft_slots() -> None:
+    """Populate draft_slots from the hardcoded DRAFT_ORDER on first startup.
+    The ESPN poller keeps it in sync after that (including live trades)."""
+    db = SessionLocal()
+    try:
+        if db.query(DraftSlot).count() > 0:
+            return
+        for row in DRAFT_ORDER:
+            team_str = row["team"]
+            trade_note = None
+            team_name = team_str
+            lower = team_str.lower()
+            if "(from " in lower:
+                idx = lower.index("(from ")
+                team_name = team_str[:idx].strip()
+                note_body = team_str[idx + 1 : team_str.rindex(")")]  # "from CIN"
+                trade_note = note_body[0].upper() + note_body[1:]      # "From CIN"
+            db.add(DraftSlot(
+                slot_number=row["pick"],
+                team_id=None,
+                team_name=team_name,
+                team_abbr=row["abbr"],
+                trade_note=trade_note,
+                traded=1 if trade_note else 0,
+            ))
+        db.commit()
+    finally:
+        db.close()
+
+
+def _draft_order_from_db(db: Session) -> list[dict]:
+    slots = db.query(DraftSlot).order_by(DraftSlot.slot_number).all()
+    if not slots:
+        return DRAFT_ORDER
+    out = []
+    for s in slots:
+        display = f"{s.team_name} ({s.trade_note})" if s.trade_note else s.team_name
+        out.append({
+            "pick": s.slot_number,
+            "team": display,
+            "abbr": s.team_abbr,
+            "team_name": s.team_name,
+            "trade_note": s.trade_note,
+            "traded": bool(s.traded),
+        })
+    return out
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
     run_migrations()
     seed()
+    seed_draft_slots()
     poller_task = asyncio.create_task(espn_poller.poller_loop(DRAFT_LOCK))
     try:
         yield
@@ -120,10 +169,13 @@ def get_prospects(db: Session = Depends(get_db)):
 
 
 # ── Draft order ───────────────────────────────────────────────────────────
+# DRAFT_ORDER above is the pre-draft baseline. Live team ownership (including
+# any trades picked up by the ESPN poller) is stored in the DraftSlot table
+# and returned here.
 
 @app.get("/api/draft-order")
-def get_draft_order():
-    return DRAFT_ORDER
+def get_draft_order(db: Session = Depends(get_db)):
+    return _draft_order_from_db(db)
 
 
 # ── Scoring config ───────────────────────────────────────────────────────
@@ -346,7 +398,7 @@ def get_entry(token: str, db: Session = Depends(get_db)):
             "has_results": False,
             "picks_hidden": True,
             "picks": [],
-            "draft_order": DRAFT_ORDER,
+            "draft_order": _draft_order_from_db(db),
         }
 
     picks = sorted(user.picks, key=lambda x: x.slot_number)

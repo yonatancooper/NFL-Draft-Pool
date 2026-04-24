@@ -74,3 +74,15 @@ class SavedDraft(Base):
     password_hash = Column(String, nullable=False)
     board_json = Column(Text, nullable=False)  # JSON: {slot_number: prospect_id}
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+
+class DraftSlot(Base):
+    """Current team ownership per slot. Kept in sync with ESPN by the poller."""
+    __tablename__ = "draft_slots"
+    slot_number = Column(Integer, primary_key=True)
+    team_id = Column(Integer, nullable=True)           # ESPN NFL team id
+    team_name = Column(String, nullable=False)         # e.g. "Dallas Cowboys"
+    team_abbr = Column(String, nullable=False)         # e.g. "DAL"
+    trade_note = Column(String, nullable=True)         # e.g. "From CLE via BUF"
+    traded = Column(Integer, default=0, nullable=False)  # 0/1
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)

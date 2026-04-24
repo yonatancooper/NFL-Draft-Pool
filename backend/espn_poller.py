@@ -19,8 +19,45 @@ from threading import Lock
 from sqlalchemy.orm import Session
 
 from database import SessionLocal
-from models import Prospect, Result, Score, User
+from models import Prospect, Result, Score, User, DraftSlot
 from scoring import load_scoring_config, score_submission
+
+# ESPN NFL teamId -> (displayName, abbreviation). Used to resolve the
+# current owner of each pick from ESPN's draft payload.
+NFL_TEAMS: dict[int, tuple[str, str]] = {
+    1:  ("Atlanta Falcons", "ATL"),
+    2:  ("Buffalo Bills", "BUF"),
+    3:  ("Chicago Bears", "CHI"),
+    4:  ("Cincinnati Bengals", "CIN"),
+    5:  ("Cleveland Browns", "CLE"),
+    6:  ("Dallas Cowboys", "DAL"),
+    7:  ("Denver Broncos", "DEN"),
+    8:  ("Detroit Lions", "DET"),
+    9:  ("Green Bay Packers", "GB"),
+    10: ("Tennessee Titans", "TEN"),
+    11: ("Indianapolis Colts", "IND"),
+    12: ("Kansas City Chiefs", "KC"),
+    13: ("Las Vegas Raiders", "LV"),
+    14: ("Los Angeles Rams", "LAR"),
+    15: ("Miami Dolphins", "MIA"),
+    16: ("Minnesota Vikings", "MIN"),
+    17: ("New England Patriots", "NE"),
+    18: ("New Orleans Saints", "NO"),
+    19: ("New York Giants", "NYG"),
+    20: ("New York Jets", "NYJ"),
+    21: ("Philadelphia Eagles", "PHI"),
+    22: ("Arizona Cardinals", "ARI"),
+    23: ("Pittsburgh Steelers", "PIT"),
+    24: ("Los Angeles Chargers", "LAC"),
+    25: ("San Francisco 49ers", "SF"),
+    26: ("Seattle Seahawks", "SEA"),
+    27: ("Tampa Bay Buccaneers", "TB"),
+    28: ("Washington Commanders", "WSH"),
+    29: ("Carolina Panthers", "CAR"),
+    30: ("Jacksonville Jaguars", "JAX"),
+    33: ("Baltimore Ravens", "BAL"),
+    34: ("Houston Texans", "HOU"),
+}
 
 log = logging.getLogger("espn_poller")
 log.setLevel(logging.INFO)
@@ -158,6 +195,75 @@ def _already_has_result(db: Session, slot_number: int) -> bool:
     return db.query(Result).filter(Result.slot_number == slot_number).first() is not None
 
 
+def sync_draft_order(db: Session, raw_data: dict, pool_size: int = POOL_PICK_COUNT) -> int:
+    """Update DraftSlot rows for picks 1..pool_size from ESPN payload.
+
+    Returns the number of slots changed. Records a 'trade' event whenever
+    a slot's current owner or trade note changes.
+    """
+    picks = raw_data.get("picks") or []
+    changed_count = 0
+    for p in picks:
+        overall = p.get("overall") or 0
+        if overall < 1 or overall > pool_size:
+            continue
+        # ESPN returns teamId as a string; coerce before lookup.
+        raw_team_id = p.get("teamId")
+        try:
+            team_id = int(raw_team_id) if raw_team_id is not None else None
+        except (TypeError, ValueError):
+            team_id = None
+        meta = NFL_TEAMS.get(team_id) if team_id is not None else None
+        if not meta:
+            continue
+        team_name, team_abbr = meta
+        trade_note = (p.get("tradeNote") or "").strip() or None
+        traded_flag = 1 if p.get("traded") else 0
+
+        slot = db.query(DraftSlot).filter(DraftSlot.slot_number == overall).first()
+        if slot is None:
+            db.add(DraftSlot(
+                slot_number=overall,
+                team_id=team_id,
+                team_name=team_name,
+                team_abbr=team_abbr,
+                trade_note=trade_note,
+                traded=traded_flag,
+            ))
+            changed_count += 1
+            _record_event(
+                "trade",
+                overall,
+                f"Pick {overall}: set to {team_abbr}" + (f" ({trade_note})" if trade_note else ""),
+                {"team_id": team_id, "team_abbr": team_abbr, "trade_note": trade_note},
+            )
+            continue
+
+        if (slot.team_id != team_id
+                or slot.team_abbr != team_abbr
+                or slot.team_name != team_name
+                or slot.trade_note != trade_note
+                or bool(slot.traded) != bool(traded_flag)):
+            old = f"{slot.team_abbr}" + (f" ({slot.trade_note})" if slot.trade_note else "")
+            new = f"{team_abbr}" + (f" ({trade_note})" if trade_note else "")
+            slot.team_id = team_id
+            slot.team_name = team_name
+            slot.team_abbr = team_abbr
+            slot.trade_note = trade_note
+            slot.traded = traded_flag
+            changed_count += 1
+            if old != new:
+                _record_event(
+                    "trade",
+                    overall,
+                    f"Pick {overall}: {old} -> {new}",
+                    {"team_id": team_id, "team_abbr": team_abbr, "trade_note": trade_note},
+                )
+    if changed_count:
+        db.commit()
+    return changed_count
+
+
 def poll_once(year: int, raw_data: dict) -> None:
     """Process one ESPN payload: write auto-matches, queue flagged ones."""
     status = raw_data.get("status") or {}
@@ -169,6 +275,13 @@ def poll_once(year: int, raw_data: dict) -> None:
 
     db = SessionLocal()
     try:
+        # Sync current team ownership for pool picks (reflects any new trades).
+        try:
+            sync_draft_order(db, raw_data)
+        except Exception as e:
+            log.exception("sync_draft_order failed")
+            _record_event("error", 0, f"sync_draft_order error: {e}")
+
         prospects = db.query(Prospect).all()
         picks = raw_data.get("picks", [])
         processed = 0
