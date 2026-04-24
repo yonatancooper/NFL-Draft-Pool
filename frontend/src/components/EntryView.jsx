@@ -230,7 +230,7 @@ export default function EntryView() {
           {entry.has_results && (
             <div className="hidden sm:grid grid-cols-[auto_auto_1fr_auto_1fr_auto] gap-3 items-center px-3 pb-2 text-[10px] uppercase tracking-wide text-gray-500">
               <div className="w-8">Pick</div>
-              <div className="w-10">Team</div>
+              <div className="w-20">Team</div>
               <div>Your Prediction</div>
               <div className="w-6" />
               <div>Actual Pick</div>
@@ -255,8 +255,15 @@ export default function EntryView() {
                     <div className="w-8 h-8 rounded-full bg-gray-900 border border-gray-700 flex items-center justify-center text-sm font-bold text-gray-300">
                       {pick.slot_number}
                     </div>
-                    <div className="w-10 text-xs font-bold text-gray-400 text-center">
-                      {team?.abbr || ''}
+                    <div className="w-20 text-center">
+                      <div className="text-xs font-bold text-gray-300 leading-tight">
+                        {team?.abbr || ''}
+                      </div>
+                      {team?.trade_note && (
+                        <div className="text-[9px] italic text-blue-300/80 leading-tight mt-0.5">
+                          {team.trade_note.toLowerCase()}
+                        </div>
+                      )}
                     </div>
                     <MiniProspectCard
                       prospect={pick.predicted_prospect}
@@ -290,11 +297,16 @@ export default function EntryView() {
                   {/* Mobile stacked layout */}
                   <div className="sm:hidden">
                     <div className="flex items-center justify-between mb-2">
-                      <div className="flex items-center gap-2">
-                        <div className="w-7 h-7 rounded-full bg-gray-900 border border-gray-700 flex items-center justify-center text-xs font-bold text-gray-300">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <div className="w-7 h-7 rounded-full bg-gray-900 border border-gray-700 flex items-center justify-center text-xs font-bold text-gray-300 shrink-0">
                           {pick.slot_number}
                         </div>
-                        <span className="text-xs font-bold text-gray-400">{team?.abbr || ''}</span>
+                        <span className="text-xs font-bold text-gray-300 shrink-0">{team?.abbr || ''}</span>
+                        {team?.trade_note && (
+                          <span className="text-[10px] italic text-blue-300/80 truncate">
+                            {team.trade_note.toLowerCase()}
+                          </span>
+                        )}
                       </div>
                       {entry.has_results && (
                         <div className="flex items-center gap-2">
